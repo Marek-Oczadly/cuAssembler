@@ -21,6 +21,7 @@ public:
 
     static void logDebug(const std::string& message);
     static void logInfo(const std::string& message);
+    static void logEntry(const std::string& message);
     static void logProcedure(const std::string& message);
     static void logWarning(const std::string& message);
     static void logError(const std::string& message);
