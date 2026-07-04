@@ -25,6 +25,11 @@ public:
     static void logProcedure(const std::string& message);
     static void logWarning(const std::string& message);
     static void logError(const std::string& message);
+
+    /**
+     * @brief Raises the logger's level to Error, silencing debug/info/procedure/warning output.
+     */
+    static void disable();
 };
 
 } // namespace CuAsm
