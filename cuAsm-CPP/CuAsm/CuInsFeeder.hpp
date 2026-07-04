@@ -1,10 +1,22 @@
 #pragma once
 
+#include <cstdint>
 #include <istream>
+#include <optional>
 #include <ostream>
 #include <string>
 
 namespace CuAsm {
+
+/**
+ * @brief One (addr, code, asm, ctrl) record yielded while iterating a CuInsFeeder.
+ **/
+struct CuInsRecord {
+    std::uint64_t addr;
+    std::uint64_t code;
+    std::string asmText;
+    std::uint32_t ctrl;
+};
 
 class CuInsFeeder {
 public:
@@ -43,6 +55,19 @@ public:
      *        "none" (default) to strip them for a more compact output.
      **/
     void trans(std::ostream& outStream, const std::string& codeOnlyLineMode = "none");
+
+    /**
+     * @brief Rewinds the underlying stream back to the start, resetting the feeder's line counter
+     *        so it can be iterated again from the beginning.
+     **/
+    void restart();
+
+    /**
+     * @brief Retrieves the next (addr, code, asm, ctrl) instruction record, honoring the arch and
+     *        instruction filters, mirroring the original's __iter__ generator.
+     * @return The next record, or std::nullopt once the feeder is exhausted.
+     **/
+    std::optional<CuInsRecord> next();
 
     // Name of the function/kernel currently being fed, updated as "Function :" / ".section .text." lines are read.
     std::string CurrFuncName;

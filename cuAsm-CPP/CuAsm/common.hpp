@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -52,5 +53,25 @@ std::string checkOutput(const std::vector<std::string>& args);
  * @return The generated temporary file path.
  **/
 std::string getTempFileName(const std::string& name = "", const std::string& prefix = "cuasm", const std::string& suffix = "");
+
+/**
+ * @brief Formats an integer as a space-grouped binary string, mirroring CuAsm.common.binstr.
+ * @param v Value to format.
+ * @param bitlen Total number of bits to print, zero-padded on the left.
+ * @param width Number of bits per group.
+ * @param sp Separator inserted between groups.
+ * @return The formatted binary string.
+ **/
+std::string binstr(std::uint64_t v, int bitlen = 128, int width = 4, const std::string& sp = " ");
+
+/**
+ * @brief Formats an integer as a space-grouped hex string, mirroring CuAsm.common.hexstr.
+ * @param v Value to format.
+ * @param bitlen Total number of bits to print (bitlen/4 hex digits), zero-padded on the left.
+ * @param width Number of hex digits per group.
+ * @param sp Separator inserted between groups.
+ * @return The formatted hex string.
+ **/
+std::string hexstr(std::uint64_t v, int bitlen = 128, int width = 4, const std::string& sp = " ");
 
 } // namespace CuAsm
