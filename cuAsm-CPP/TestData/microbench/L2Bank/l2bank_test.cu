@@ -1,3 +1,8 @@
+// Only nvcc defines __CUDACC__; this keeps IntelliSense (which parses .cu files with the
+// project's regular C++ compiler, e.g. MinGW g++ on Windows, and chokes on CUDA syntax/headers)
+// from flagging the whole file with false errors when nvcc itself isn't doing the parsing.
+#ifdef __CUDACC__
+
 #include "cuda_runtime.h"
 #include "helper_cuda.h"
 #include "cuptr.hpp"
@@ -154,3 +159,5 @@ int main()
     // dotest<uint64_t>();
     return 0;
 }
+
+#endif // __CUDACC__
