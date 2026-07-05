@@ -6,6 +6,8 @@
 #include <utility>
 #include <vector>
 
+#include "utils/BigNum.hpp"
+
 namespace CuAsm {
 
 class CuNVInfo;
@@ -113,6 +115,14 @@ public:
      * @return The instruction's 0-based index, or -1 if offset addresses a control-code word.
      **/
     int getInsIndexFromOffset(std::uint64_t offset) const;
+
+    /**
+     * @brief Formats an instruction code as a fixed-width hex string, mirroring
+     *        CuSMVersion.formatCode.
+     * @param code Instruction code to format.
+     * @return "0x" followed by 22 (sm_5x/6x) or 32 (sm_7x/8x+) zero-padded hex digits.
+     **/
+    std::string formatCode(const BigInt& code) const;
 
     /**
      * @brief Compares by numeric SM version.

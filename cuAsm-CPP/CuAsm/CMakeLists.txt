@@ -6,6 +6,8 @@ add_library(CuAsm STATIC
     config.cpp
     CuAsmParser.cpp
     CubinFile.cpp
+    CuControlCode.cpp
+    CuInsAssembler.cpp
 )
 
 target_include_directories(CuAsm PUBLIC
@@ -13,4 +15,7 @@ target_include_directories(CuAsm PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/..
 )
 
-target_link_libraries(CuAsm PUBLIC CuAsmUtils elfio::elfio)
+# Boost.Multiprecision (used by CuInsAssembler for exact-rational linear algebra) is header-only
+# and part of the same Boost distribution found via find_package(Boost) in the top-level
+# CMakeLists.txt, so no extra COMPONENTS/dependency is needed beyond linking its headers target.
+target_link_libraries(CuAsm PUBLIC CuAsmUtils elfio::elfio Boost::headers)
