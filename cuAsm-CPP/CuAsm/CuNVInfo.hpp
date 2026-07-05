@@ -35,6 +35,15 @@ public:
     std::vector<std::uint8_t> serialize() const;
 
     /**
+     * @brief Builds a map from byte offset to a generated label name, for OFFSETS attributes
+     *        that cannot be recovered from disassembly text alone, mirroring
+     *        CuNVInfo.getOffsetLabelDict.
+     * @param secname Kernel/section name used to build the label text.
+     * @return Map of offset -> label name.
+     **/
+    std::map<std::uint64_t, std::string> getOffsetLabelDict(const std::string& secname) const;
+
+    /**
      * @brief Updates attribute values from a kernel's extra-info dict, keeping unrelated
      *        attributes as-is and dropping auto/manual-gen attributes no longer present,
      *        mirroring CuNVInfo.updateNVInfoFromDict. Should only be called for a

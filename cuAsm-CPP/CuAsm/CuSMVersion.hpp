@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace CuAsm {
 
@@ -78,6 +80,39 @@ public:
      * @return True if all entries were found and updated.
      **/
     bool setRegCountInNVInfo(CuNVInfo& nvinfo, const std::map<int, int>& regCountDict) const;
+
+    /**
+     * @brief Checks whether cubins for this arch need the desc[UR#] cache-policy hack applied
+     *        before disassembly, mirroring CuSMVersion.needsDescHack.
+     * @return True for sm_80 and later.
+     **/
+    bool needsDescHack() const;
+
+    /**
+     * @brief Rewrites a disassembled instruction line to replace a QNAN operand with its exact
+     *        float bit pattern, mirroring CuSMVersion.hackDisassembly.
+     * @param code Raw instruction code containing the QNAN immediate.
+     * @param asmLine Disassembled instruction text containing "+QNAN"/"-QNAN".
+     * @return The rewritten instruction text.
+     **/
+    std::string hackDisassembly(std::uint64_t code, const std::string& asmLine) const;
+
+    /**
+     * @brief Splits packed instruction bytes into parallel control-code and instruction-code
+     *        lists, mirroring CuSMVersion.splitCtrlCodeFromBytes(_5x_6x/_7x_8x).
+     * @param codebytes Raw bytes of a .text.* section.
+     * @return Pair of (control code list, instruction code list), one entry per instruction.
+     **/
+    std::pair<std::vector<std::uint32_t>, std::vector<std::uint64_t>>
+    splitCtrlCodeFromBytes(const std::string& codebytes) const;
+
+    /**
+     * @brief Gets the instruction index for a byte offset within a .text.* section, mirroring
+     *        getInsIndexFromOffset.
+     * @param offset Byte offset of the instruction.
+     * @return The instruction's 0-based index, or -1 if offset addresses a control-code word.
+     **/
+    int getInsIndexFromOffset(std::uint64_t offset) const;
 
     /**
      * @brief Compares by numeric SM version.

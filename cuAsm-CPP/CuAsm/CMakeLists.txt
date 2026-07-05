@@ -5,6 +5,7 @@ add_library(CuAsm STATIC
     common.cpp
     config.cpp
     CuAsmParser.cpp
+    CubinFile.cpp
 )
 
 target_include_directories(CuAsm PUBLIC
