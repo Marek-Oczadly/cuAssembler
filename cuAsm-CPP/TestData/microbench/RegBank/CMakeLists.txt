@@ -31,8 +31,8 @@ if(CMAKE_CUDA_COMPILER)
     # machine's Windows SDK install); adjust if building on a different machine.
     target_include_directories(regbank_test PRIVATE
         "C:/Program Files (x86)/Windows Kits/10/Include/10.0.18362.0/ucrt"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
     )
+    target_link_libraries(regbank_test PRIVATE TestDataInclude)
     target_link_directories(regbank_test PRIVATE
         "C:/Program Files (x86)/Windows Kits/10/Lib/10.0.18362.0/ucrt/x64"
         "C:/Program Files (x86)/Windows Kits/10/Lib/10.0.18362.0/um/x64"
