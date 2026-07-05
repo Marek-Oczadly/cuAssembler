@@ -4,6 +4,7 @@
 #include <string>
 
 #include "CuInsFeeder.hpp"
+#include "CuSMVersion.hpp"
 
 namespace CuAsm {
 
@@ -16,6 +17,25 @@ public:
      * @param arch Optional arch string (e.g. "sm_75"); std::nullopt leaves it unset.
      **/
     explicit CuInsAssemblerRepos(std::optional<std::string> reposFile = std::nullopt, std::optional<std::string> arch = std::nullopt);
+
+    /**
+     * @brief Constructs an empty repos for a given arch, mirroring
+     *        CuInsAssemblerRepos(arch=someCuSMVersion).
+     * @param arch Arch to configure the (empty) repos for.
+     **/
+    explicit CuInsAssemblerRepos(const CuSMVersion& arch);
+
+    /**
+     * @brief Gets the arch this repos is configured for.
+     * @return The repos's SM version.
+     **/
+    CuSMVersion getSMVersion() const;
+
+    /**
+     * @brief Loads (or falls back to an empty) default instruction-assembler dict for this
+     *        repos's arch, mirroring setToDefaultInsAsmDict.
+     **/
+    void setToDefaultInsAsmDict();
 
     /**
      * @brief Updates the repos with instructions yielded by feeder.

@@ -4,6 +4,7 @@ add_subdirectory(utils)
 add_library(CuAsm STATIC
     common.cpp
     config.cpp
+    CuAsmParser.cpp
 )
 
 target_include_directories(CuAsm PUBLIC

@@ -9,6 +9,15 @@ namespace CuAsm {
 /// Length of a formatted control-code string, e.g. "B--2---:R0:W1:-:S07".
 constexpr int c_ControlStringLen = 19;
 
+/**
+ * @brief Checks whether a string matches the control-code text format
+ *        "B(0|-)(1|-)(2|-)(3|-)(4|-)(5|-):R[0-5-]:W[0-5-]:(Y|-):S\d{2}", mirroring
+ *        CuControlCode.c_ControlCodesPattern.
+ * @param s String to check.
+ * @return True if s matches the control-code format.
+ **/
+bool matchesControlCodePattern(const std::string& s);
+
 class CuControlCode {
 public:
     /**

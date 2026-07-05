@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <variant>
 #include <vector>
@@ -25,6 +26,30 @@ public:
      * @param arch Arch string (e.g. "sm_75") the section belongs to.
      **/
     explicit CuNVInfo(const std::vector<std::uint8_t>& bytecodes, const std::string& arch = "sm_75");
+
+    /**
+     * @brief Serializes the attribute list back into its raw ".nv.info" byte encoding, mirroring
+     *        CuNVInfo.serialize.
+     * @return The encoded bytes.
+     **/
+    std::vector<std::uint8_t> serialize() const;
+
+    /**
+     * @brief Updates attribute values from a kernel's extra-info dict, keeping unrelated
+     *        attributes as-is and dropping auto/manual-gen attributes no longer present,
+     *        mirroring CuNVInfo.updateNVInfoFromDict. Should only be called for a
+     *        ".nv.info.<kernel>" section, not the top-level ".nv.info".
+     * @param nvinfoDict Map of attribute name to new value.
+     **/
+    void updateNVInfoFromDict(const std::map<std::string, CuNVInfoValue>& nvinfoDict);
+
+    /**
+     * @brief Updates EIATTR_REGCOUNT entries with per-symbol register counts, mirroring
+     *        CuNVInfo.setRegCount. Should only be called for the top-level ".nv.info" section.
+     * @param regCountDict Map of symbol index to register count.
+     * @return True if all entries were found and updated.
+     **/
+    bool setRegCount(const std::map<int, int>& regCountDict);
 
     /// Decoded (attr, val) entries, in the order they appear in the section.
     std::vector<CuNVInfoAttr> m_AttrList;
