@@ -9,6 +9,7 @@ add_library(CuAsm STATIC
     CuControlCode.cpp
     CuInsAssembler.cpp
     CuInsAssemblerRepos.cpp
+    CuInsFeeder.cpp
 )
 
 target_include_directories(CuAsm PUBLIC

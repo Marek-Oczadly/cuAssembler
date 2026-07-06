@@ -111,6 +111,27 @@ public:
     splitCtrlCodeFromBytes(const std::string& codebytes) const;
 
     /**
+     * @brief Splits a flat list of raw sm5x/6x instruction-pack ints into parallel control-code
+     *        and instruction-code lists, mirroring CuSMVersion.splitCtrlCodeFromIntList_5x_6x.
+     *        Every group of 4 ints (1 control-code word + 3 instruction words) becomes 3 (ctrl,
+     *        code) pairs; reuse-cache bits are folded into each instruction code above bit 64.
+     * @param intList Raw ints, length a multiple of 4.
+     * @return Pair of (control code list, instruction code list), 3/4 the length of intList.
+     **/
+    static std::pair<std::vector<std::uint32_t>, std::vector<std::uint64_t>>
+    splitCtrlCodeFromIntList_5x_6x(const std::vector<BigInt>& intList);
+
+    /**
+     * @brief Splits a flat list of raw sm7x/8x/9x 128-bit instruction ints into parallel
+     *        control-code and instruction-code lists, mirroring
+     *        CuSMVersion.splitCtrlCodeFromIntList_7x_8x.
+     * @param intList Raw (up to 128-bit) instruction ints, one per instruction.
+     * @return Pair of (control code list, instruction code list), same length as intList.
+     **/
+    static std::pair<std::vector<std::uint32_t>, std::vector<std::uint64_t>>
+    splitCtrlCodeFromIntList_7x_8x(const std::vector<BigInt>& intList);
+
+    /**
      * @brief Gets the instruction index for a byte offset within a .text.* section, mirroring
      *        getInsIndexFromOffset.
      * @param offset Byte offset of the instruction.
