@@ -110,6 +110,15 @@ public:
     /** @brief Number of instruction keys in the repos, mirroring __len__. */
     std::size_t size() const;
 
+    /**
+     * @brief Gets the instruction parser used internally by assemble(), exposing its
+     *        last-parsed-instruction state (e.g. m_InsOp/m_InsKey/m_InsModifier/m_InsVals) for
+     *        callers such as CuKernelAssembler's auto-attribute detection, mirroring python's
+     *        direct (duck-typed) access to m_InsParser.
+     * @return Reference to the internal parser. Only meaningful after at least one assemble() call.
+     **/
+    const CuInsParser& getInsParser() const;
+
     InsAsmDict::iterator begin() { return m_InsAsmDict.begin(); }
     InsAsmDict::iterator end() { return m_InsAsmDict.end(); }
     InsAsmDict::const_iterator begin() const { return m_InsAsmDict.begin(); }

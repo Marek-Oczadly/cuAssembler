@@ -11,6 +11,8 @@ add_library(CuAsm STATIC
     CuInsAssemblerRepos.cpp
     CuInsFeeder.cpp
     CuInsParser.cpp
+    CuKernelAssembler.cpp
+    CuNVInfo.cpp
 )
 
 target_include_directories(CuAsm PUBLIC

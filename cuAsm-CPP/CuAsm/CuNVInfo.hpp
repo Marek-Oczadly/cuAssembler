@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <variant>
 #include <vector>
@@ -60,8 +61,24 @@ public:
      **/
     bool setRegCount(const std::map<int, int>& regCountDict);
 
+    /**
+     * @brief Gets every attribute whose name is not a recognized EIATTR (i.e. was decoded from
+     *        an attr_key not in the EIATTR table), mirroring CuNVInfo.getUnknownAttrList.
+     * @return The unknown attribute entries, in m_AttrList order.
+     **/
+    std::vector<CuNVInfoAttr> getUnknownAttrList() const;
+
     /// Decoded (attr, val) entries, in the order they appear in the section.
     std::vector<CuNVInfoAttr> m_AttrList;
+
+private:
+    /// Attributes the kernel assembler can auto-generate, mirroring __mEIATTR_AutoGen (a copy of
+    /// CuSMVersion.getNVInfoAttrAutoGenSet() taken at construction time).
+    std::set<std::string> m_EIATTRAutoGen;
+
+    /// Attributes the kernel assembler should generate manually, mirroring __mEIATTR_MaunalGen
+    /// (a copy of CuSMVersion.getNVInfoAttrManualGenSet() taken at construction time).
+    std::set<std::string> m_EIATTRManualGen;
 };
 
 } // namespace CuAsm

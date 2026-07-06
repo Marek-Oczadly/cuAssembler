@@ -609,6 +609,10 @@ std::size_t CuInsAssemblerRepos::size() const {
     return m_InsAsmDict.size();
 }
 
+const CuInsParser& CuInsAssemblerRepos::getInsParser() const {
+    return *m_InsParser;
+}
+
 void CuInsAssemblerRepos::initFromFile(const std::string& fileName) {
     std::ifstream fin(fileName);
     if (!fin) {
