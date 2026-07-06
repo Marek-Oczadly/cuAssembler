@@ -8,6 +8,7 @@ add_library(CuAsm STATIC
     CubinFile.cpp
     CuControlCode.cpp
     CuInsAssembler.cpp
+    CuInsAssemblerRepos.cpp
 )
 
 target_include_directories(CuAsm PUBLIC

@@ -2,7 +2,9 @@
 
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -137,6 +139,25 @@ public:
      * @return True if the versions differ.
      **/
     bool operator!=(const CuSMVersion& other) const;
+
+    /**
+     * @brief Generates a guard-predicated variant of an instruction that was recorded without one,
+     *        mirroring CuSMVersion.genPredCode. Takes/returns the same (addr, code, asmText) shape
+     *        as CuAsm::InsInfo, spelled out as a tuple here to avoid CuInsAssembler.hpp's reverse
+     *        include of this header.
+     * @param addr Address of the unpredicated instruction.
+     * @param code Code of the unpredicated instruction.
+     * @param asmText Asm text of the unpredicated instruction.
+     * @return The predicated variant's (addr, code, asmText), or std::nullopt if asmText already
+     *         has a predicate (or is an UNDEF pseudo-instruction).
+     **/
+    std::optional<std::tuple<std::uint64_t, BigInt, std::string>>
+    genPredCode(std::uint64_t addr, const BigInt& code, const std::string& asmText) const;
+
+    /// Some versions do not have a pre-gathered InsAsmRepos, but since the encoding may be almost
+    /// identical to another version, its InsAsmRepos may be copied instead, mirroring
+    /// CuSMVersion.InsAsmReposAliasDict. Maps a version number to the version number to alias.
+    static const std::map<int, int> InsAsmReposAliasDict;
 
 private:
     int m_Version;

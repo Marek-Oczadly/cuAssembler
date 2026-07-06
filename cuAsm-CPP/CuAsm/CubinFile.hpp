@@ -115,7 +115,7 @@ private:
     void writeExplicitSectionAsm(std::ostream& os, const std::string& secName);
 
     /**
-     * @brief Writes a section not shown in nvdisasm output (.shstrtab/.strtab/.symtab/.rel*/
+     * @brief Writes a section not shown in nvdisasm output (.shstrtab/.strtab/.symtab/.rel*\/
      *        etc.), mirroring CubinFile.__writeImplicitSectionAsm.
      * @param os Stream to write to.
      * @param secName Section name to write.
