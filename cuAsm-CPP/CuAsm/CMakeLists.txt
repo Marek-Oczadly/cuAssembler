@@ -14,6 +14,7 @@ add_library(CuAsm STATIC
     CuKernelAssembler.cpp
     CuNVInfo.cpp
     CuSMVersion.cpp
+    utils/CubinUtils.cpp
 )
 
 target_include_directories(CuAsm PUBLIC
