@@ -632,8 +632,8 @@ void CuInsAssemblerRepos::initFromFile(const std::string& fileName) {
 }
 
 BigInt CuInsAssemblerRepos::assemble(std::uint64_t addr, const std::string& s, bool precheck, bool showCandidates) {
-    const auto [insKey, insValsU64, insModi] = m_InsParser->parse(s, addr, 0);
-    const InsVals insVals(insValsU64.begin(), insValsU64.end());
+    const auto [insKey, insValsSigned, insModi] = m_InsParser->parse(s, addr, 0);
+    const InsVals insVals(insValsSigned.begin(), insValsSigned.end());
 
     const auto it = m_InsAsmDict.find(insKey);
     if (it == m_InsAsmDict.end()) {
@@ -711,8 +711,8 @@ int CuInsAssemblerRepos::updateFromGenerator(const std::function<std::optional<I
 
         while (const auto rec = next()) {
             ++cnt;
-            const auto [insKey, insValsU64, insModi] = m_InsParser->parse(rec->asmText, rec->addr, rec->code.convert_to<std::uint64_t>());
-            const InsVals insVals(insValsU64.begin(), insValsU64.end());
+            const auto [insKey, insValsSigned, insModi] = m_InsParser->parse(rec->asmText, rec->addr, rec->code.convert_to<std::uint64_t>());
+            const InsVals insVals(insValsSigned.begin(), insValsSigned.end());
 
             auto it = dict.find(insKey);
             if (it == dict.end()) {

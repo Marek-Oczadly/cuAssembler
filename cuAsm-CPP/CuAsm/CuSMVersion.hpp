@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -146,6 +147,35 @@ public:
      * @return "0x" followed by 22 (sm_5x/6x) or 32 (sm_7x/8x+) zero-padded hex digits.
      **/
     std::string formatCode(const BigInt& code) const;
+
+    /**
+     * @brief Gets the set of opcodes whose modifiers are position-dependent for this arch (e.g.
+     *        F2F.F32.F64 != F2F.F64.F32), mirroring the instance attribute CuSMVersion.m_PosDepOpcodes.
+     * @return The arch's position-dependent opcode set.
+     **/
+    const std::set<std::string>& getPosDepOpcodes() const;
+
+    /**
+     * @brief Converts a float immediate string to its raw bit pattern (and any needed modifiers),
+     *        mirroring CuSMVersion.convertFloatImme.
+     * @param fval Float immediate text, e.g. "-0.5", "0f3f800000", "+INF", "-NAN".
+     * @param prec Precision: 'H' (half), 'F' (float), 'D' (double).
+     * @param nbits How many bits to keep; -1 (default) means the precision's default, only
+     *        relevant for opcodes ending in "32I" on sm5x/6x.
+     * @return (raw bit pattern, modifiers).
+     **/
+    std::pair<std::uint64_t, std::vector<std::string>> convertFloatImme(const std::string& fval, char prec, int nbits = -1) const;
+
+    /**
+     * @brief Splits a non-negative integer immediate into (possibly re-signed) value + modifier,
+     *        mirroring CuSMVersion.splitIntImmeModifier. Takes the current instruction's plain
+     *        opcode (e.g. "IADD3") instead of the whole CuInsParser, to avoid a reverse include of
+     *        CuInsParser.hpp.
+     * @param insOp Plain opcode of the instruction being parsed (CuInsParser::m_InsOp).
+     * @param intVal Non-negative parsed integer immediate.
+     * @return (value, modifiers); value becomes negative if an implicit 20-bit sign bit was found.
+     **/
+    std::pair<std::int64_t, std::vector<std::string>> splitIntImmeModifier(const std::string& insOp, std::int64_t intVal) const;
 
     /**
      * @brief Compares by numeric SM version.
