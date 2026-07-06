@@ -19,7 +19,7 @@ namespace CuAsm {
  **/
 struct CuInsRecord {
     std::uint64_t addr;
-    std::uint64_t code;
+    BigInt code;
     std::string asmText;
     std::uint32_t ctrl;
 };

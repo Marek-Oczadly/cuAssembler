@@ -17,9 +17,11 @@ class CuNVInfo;
 
 /**
  * @brief Immutable description of a target SM architecture (e.g. sm_75), mirroring
- *        CuAsm.CuSMVersion.CuSMVersion. Only the subset of behavior needed by CuAsmParser is
- *        declared here; instances are cheap value types (no instance-repository/caching like
- *        the python class's __new__ override).
+ *        CuAsm.CuSMVersion.CuSMVersion. Instances are cheap value types (no instance-repository/
+ *        caching like the python class's __new__ override, since nothing here needs identity
+ *        equality between same-version instances). A few python members with no caller anywhere
+ *        in the project (SMCodeNameDict, c_PosDepFuncs, getHighestCodeBit, the unimplemented
+ *        extractFloatImme stub) are intentionally not ported.
  **/
 class CuSMVersion {
 public:
@@ -55,6 +57,12 @@ public:
     int getInstructionLength() const;
 
     /**
+     * @brief Gets the NOP instruction code (no control codes), mirroring CuSMVersion.getNOP.
+     * @return The NOP instruction code.
+     **/
+    std::uint64_t getNOP() const;
+
+    /**
      * @brief Gets the byte offset of an instruction from its index, mirroring
      *        getInsOffsetFromIndex.
      * @param idx Instruction index (0-based).
@@ -63,11 +71,35 @@ public:
     std::uint64_t getInsOffsetFromIndex(int idx) const;
 
     /**
+     * @brief Gets the byte offset of the instruction following the one at addr, mirroring
+     *        CuSMVersion.getNextInsAddr.
+     * @param addr Byte offset of the current instruction.
+     * @return The byte offset of the next instruction.
+     **/
+    std::uint64_t getNextInsAddr(std::uint64_t addr) const;
+
+    /**
+     * @brief Gets the byte offset of the instruction preceding the one at addr, mirroring
+     *        CuSMVersion.getPrevInsAddr.
+     * @param addr Byte offset of the current instruction.
+     * @return The byte offset of the previous instruction.
+     **/
+    std::uint64_t getPrevInsAddr(std::uint64_t addr) const;
+
+    /**
      * @brief Gets the padding bytes used to fill unused instruction slots for this arch,
      *        mirroring getPadBytes.
      * @return The padding byte sequence.
      **/
     std::string getPadBytes() const;
+
+    /**
+     * @brief Gets the size unit (in bytes) the .text section should be padded to a multiple of,
+     *        mirroring CuSMVersion.getTextSectionSizeUnit. This differs from section alignment,
+     *        which applies to the section's offset, not its size.
+     * @return The text section size unit.
+     **/
+    int getTextSectionSizeUnit() const;
 
     /**
      * @brief Gets the relocation type name for an in-instruction fixup key, mirroring
@@ -104,11 +136,15 @@ public:
 
     /**
      * @brief Splits packed instruction bytes into parallel control-code and instruction-code
-     *        lists, mirroring CuSMVersion.splitCtrlCodeFromBytes(_5x_6x/_7x_8x).
+     *        lists, mirroring CuSMVersion.splitCtrlCodeFromBytes(_5x_6x/_7x_8x). Instruction codes
+     *        are returned as BigInt (rather than a fixed-width int) since sm_7x/8x/9x real
+     *        instruction encoding is up to 105 bits wide, and sm_5x/6x codes carry an extra
+     *        reuse-cache nibble above bit 64 - both wider than 64 bits, mirroring the python
+     *        original's unbounded ints losslessly.
      * @param codebytes Raw bytes of a .text.* section.
      * @return Pair of (control code list, instruction code list), one entry per instruction.
      **/
-    std::pair<std::vector<std::uint32_t>, std::vector<std::uint64_t>>
+    std::pair<std::vector<std::uint32_t>, std::vector<BigInt>>
     splitCtrlCodeFromBytes(const std::string& codebytes) const;
 
     /**
@@ -126,21 +162,24 @@ public:
      * @brief Splits a flat list of raw sm5x/6x instruction-pack ints into parallel control-code
      *        and instruction-code lists, mirroring CuSMVersion.splitCtrlCodeFromIntList_5x_6x.
      *        Every group of 4 ints (1 control-code word + 3 instruction words) becomes 3 (ctrl,
-     *        code) pairs; reuse-cache bits are folded into each instruction code above bit 64.
+     *        code) pairs; each instruction code carries its reuse-cache bits folded in above bit
+     *        64, matching the python original exactly since BigInt has no width limit.
      * @param intList Raw ints, length a multiple of 4.
      * @return Pair of (control code list, instruction code list), 3/4 the length of intList.
      **/
-    static std::pair<std::vector<std::uint32_t>, std::vector<std::uint64_t>>
+    static std::pair<std::vector<std::uint32_t>, std::vector<BigInt>>
     splitCtrlCodeFromIntList_5x_6x(const std::vector<BigInt>& intList);
 
     /**
      * @brief Splits a flat list of raw sm7x/8x/9x 128-bit instruction ints into parallel
      *        control-code and instruction-code lists, mirroring
-     *        CuSMVersion.splitCtrlCodeFromIntList_7x_8x.
+     *        CuSMVersion.splitCtrlCodeFromIntList_7x_8x. The real (non-control-code) instruction
+     *        encoding is up to 105 bits wide for this arch family; BigInt keeps all of it, matching
+     *        the python original's unbounded ints.
      * @param intList Raw (up to 128-bit) instruction ints, one per instruction.
      * @return Pair of (control code list, instruction code list), same length as intList.
      **/
-    static std::pair<std::vector<std::uint32_t>, std::vector<std::uint64_t>>
+    static std::pair<std::vector<std::uint32_t>, std::vector<BigInt>>
     splitCtrlCodeFromIntList_7x_8x(const std::vector<BigInt>& intList);
 
     /**

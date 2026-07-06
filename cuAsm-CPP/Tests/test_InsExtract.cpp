@@ -5,6 +5,7 @@
 #include "../CuAsm/CuControlCode.hpp"
 #include "../CuAsm/CuInsFeeder.hpp"
 #include "../CuAsm/common.hpp"
+#include "../CuAsm/utils/BigNum.hpp"
 
 /**
  * @brief Feeds instructions matching insfilter from fname and prints each as address, decoded
@@ -24,11 +25,15 @@ void doExtract(const std::string& fname, const std::string& insfilter = "", cons
     int cnt = 0;
     while (auto rec = feeder.next()) {
         std::string ctrlstr = CuAsm::CuControlCode::decode(rec->ctrl);
+        // rec->code may be wider than 64 bits (sm7x/8x real encoding, or sm5x/6x reuse-cache bits
+        // folded in above bit 64); binstr/hexstr/printf only take uint64_t, so only the low 64
+        // bits are shown here.
+        const std::uint64_t codeLow64 = (rec->code & ((CuAsm::BigInt(1) << 64) - 1)).convert_to<std::uint64_t>();
         std::printf("0x%03llx: [%s] %#016llx  %s \n",
                     static_cast<unsigned long long>(rec->addr), ctrlstr.c_str(),
-                    static_cast<unsigned long long>(rec->code), rec->asmText.c_str());
-        std::cout << CuAsm::binstr(rec->code, 64) << std::endl;
-        std::cout << CuAsm::hexstr(rec->code, 64) << std::endl;
+                    static_cast<unsigned long long>(codeLow64), rec->asmText.c_str());
+        std::cout << CuAsm::binstr(codeLow64, 64) << std::endl;
+        std::cout << CuAsm::hexstr(codeLow64, 64) << std::endl;
 
         cnt += 1;
         if (cnt >= maxcnt) {

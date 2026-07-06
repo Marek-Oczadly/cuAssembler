@@ -434,9 +434,9 @@ void CubinFile::writeCodeSectionAsm(std::ostream& os, const std::string& secName
 
             for (int iIns = pidx + 1; iIns < idx; ++iIns) {
                 const std::string cstr = CuControlCode::decode(ctrlCodeList[iIns]);
-                const std::uint64_t icode = insCodeList[iIns];
-                const std::string istr =
-                    format("    UNDEF 0x%llx; // Missing instructions, not disassembled", static_cast<unsigned long long>(icode));
+                std::ostringstream icodeHex;
+                icodeHex << std::hex << insCodeList[iIns];
+                const std::string istr = "    UNDEF 0x" + icodeHex.str() + "; // Missing instructions, not disassembled";
                 os << "      [" << cstr << "] " << istr << "\n";
             }
 
@@ -445,7 +445,10 @@ void CubinFile::writeCodeSectionAsm(std::ostream& os, const std::string& secName
             const std::string cstr = CuControlCode::decode(ctrlCodeList[idx]);
 
             if (std::regex_search(line, pQNAN)) {
-                const std::string hline = m_Arch->hackDisassembly(insCodeList[idx], line);
+                // The QNAN immediate always lives within the low 64 bits, even for sm7x/8x's
+                // wider (up to 105-bit) instruction codes.
+                const std::uint64_t low64 = (insCodeList[idx] & ((BigInt(1) << 64) - 1)).convert_to<std::uint64_t>();
+                const std::string hline = m_Arch->hackDisassembly(low64, line);
                 CuAsmLogger::logWarning("QNAN rewritten in " + secName + " : " + line);
                 os << "      [" << cstr << "] " << hline << " // QNAN rewritten: " << line << "\n";
             } else {

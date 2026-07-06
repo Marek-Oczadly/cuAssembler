@@ -337,15 +337,12 @@ CuInsFeeder::ParserState CuInsFeeder::feedLineOp(const ParsedLine& pl) {
 
 std::vector<CuInsRecord> CuInsFeeder::iterPopIns() {
     std::vector<std::uint32_t> ctrlList;
-    std::vector<std::uint64_t> codeList;
+    std::vector<BigInt> codeList;
 
     switch (m_ArchFamily) {
         case ArchFamily::Sm3x: {
             ctrlList.assign(m_CodeList.size(), 0);
-            codeList.reserve(m_CodeList.size());
-            for (const BigInt& c : m_CodeList) {
-                codeList.push_back(c.convert_to<std::uint64_t>());
-            }
+            codeList = m_CodeList;
             break;
         }
         case ArchFamily::Sm5x6x: {

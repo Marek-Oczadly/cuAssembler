@@ -4,6 +4,7 @@
 
 #include "../CuAsm/CuInsFeeder.hpp"
 #include "../CuAsm/CuInsParser.hpp"
+#include "../CuAsm/utils/BigNum.hpp"
 
 /**
  * @brief Feeds and prints every instruction record from an sm_61 dumped sass file, mirroring the
@@ -39,7 +40,11 @@ void test_sm75() {
                   << "   0x" << std::setw(28) << rec->code
                   << "   " << rec->asmText << std::dec << std::endl;
 
-        auto [insKey, insVals, insModi] = cip.parse(rec->asmText, rec->addr, rec->code);
+        // CuInsParser::parse's code param is uint64_t (kept only for dumpInfo() debug display, not
+        // used in parsing itself), so only the low 64 bits of the record's (possibly wider) code
+        // are passed through here.
+        const std::uint64_t codeLow64 = (rec->code & ((CuAsm::BigInt(1) << 64) - 1)).convert_to<std::uint64_t>();
+        auto [insKey, insVals, insModi] = cip.parse(rec->asmText, rec->addr, codeLow64);
 
         std::cout << "    Ins_Key = " << insKey << std::endl;
 

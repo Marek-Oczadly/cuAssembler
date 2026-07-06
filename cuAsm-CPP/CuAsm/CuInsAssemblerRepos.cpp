@@ -676,10 +676,10 @@ void CuInsAssemblerRepos::verify(CuInsFeeder& feeder) {
             ++cnt;
             try {
                 const BigInt casm = assemble(rec->addr, rec->asmText);
-                if (BigInt(rec->code) != casm) {
+                if (rec->code != casm) {
                     CuAsmLogger::logError("Error when verifying :");
                     CuAsmLogger::logError("  " + rec->asmText);
-                    CuAsmLogger::logError("  CodeOrg: " + m_Arch->formatCode(BigInt(rec->code)));
+                    CuAsmLogger::logError("  CodeOrg: " + m_Arch->formatCode(rec->code));
                     CuAsmLogger::logError("  CodeAsm: " + m_Arch->formatCode(casm));
                 }
             } catch (const std::exception& e) {
@@ -750,7 +750,7 @@ int CuInsAssemblerRepos::update(CuInsFeeder& feeder) {
     return updateFromGenerator(
         [&feeder]() -> std::optional<InsFeederRecord> {
             if (const auto rec = feeder.next()) {
-                return InsFeederRecord{rec->addr, BigInt(rec->code), rec->asmText, 0};
+                return InsFeederRecord{rec->addr, rec->code, rec->asmText, 0};
             }
             return std::nullopt;
         },
