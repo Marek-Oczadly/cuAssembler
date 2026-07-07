@@ -48,24 +48,64 @@ std::string readCString(const std::string& strtab, std::uint32_t offset) {
     return strtab.substr(offset, (end == std::string::npos ? strtab.size() : end) - offset);
 }
 
-/** @brief Collects the byte ranges of all ".text.<kernel>" sections in a cubin's bytes. */
-std::map<std::string, TextSectionRange> collectTextSections(const std::string& bytes) {
+/**
+ * @brief Throws if the byte range [offset, offset+size) falls outside a buffer of the given
+ *        size, mirroring the clean struct.error/ELFError pyelftools raises when a malformed or
+ *        truncated cubin's header/section table points past the actual file contents.
+ * @param bufSize Size of the buffer being read from.
+ * @param offset Start offset of the range to validate.
+ * @param size Size of the range to validate.
+ * @param what Human-readable description of what is being read, used in the error message.
+ */
+void checkBinRange(std::size_t bufSize, std::uint64_t offset, std::uint64_t size, const std::string& what) {
+    if (offset > bufSize || size > bufSize - offset) {
+        throw std::runtime_error("Malformed/truncated cubin: " + what + " (offset=" + std::to_string(offset) +
+                                  ", size=" + std::to_string(size) + ") exceeds file size " + std::to_string(bufSize) +
+                                  "!");
+    }
+}
+
+/**
+ * @brief Parses a cubin's ELF section header table into memory, validating every offset/size
+ *        against the actual buffer length so a malformed/truncated cubin raises a clean
+ *        exception instead of reading out of bounds.
+ * @param bytes Raw cubin file contents.
+ * @param outShstrtab Set to the section header string table's contents.
+ * @return The parsed section headers.
+ */
+std::vector<ELFIO::Elf64_Shdr> parseSectionHeaders(const std::string& bytes, std::string& outShstrtab) {
+    checkBinRange(bytes.size(), 0, sizeof(ELFIO::Elf64_Ehdr), "ELF header");
     ELFIO::Elf64_Ehdr ehdr{};
     std::memcpy(&ehdr, bytes.data(), sizeof(ehdr));
 
     std::vector<ELFIO::Elf64_Shdr> shdrs(ehdr.e_shnum);
     for (std::uint16_t i = 0; i < ehdr.e_shnum; ++i) {
-        const std::size_t off = ehdr.e_shoff + static_cast<std::size_t>(i) * ehdr.e_shentsize;
+        const std::uint64_t off = ehdr.e_shoff + static_cast<std::uint64_t>(i) * ehdr.e_shentsize;
+        checkBinRange(bytes.size(), off, sizeof(ELFIO::Elf64_Shdr), "section header table entry " + std::to_string(i));
         std::memcpy(&shdrs[i], bytes.data() + off, sizeof(ELFIO::Elf64_Shdr));
     }
 
+    if (ehdr.e_shstrndx >= shdrs.size()) {
+        throw std::runtime_error("Malformed cubin: section header string table index " +
+                                  std::to_string(ehdr.e_shstrndx) + " is out of range!");
+    }
     const ELFIO::Elf64_Shdr& shstrtabHdr = shdrs[ehdr.e_shstrndx];
-    const std::string shstrtab = bytes.substr(shstrtabHdr.sh_offset, shstrtabHdr.sh_size);
+    checkBinRange(bytes.size(), shstrtabHdr.sh_offset, shstrtabHdr.sh_size, "section header string table");
+    outShstrtab = bytes.substr(shstrtabHdr.sh_offset, shstrtabHdr.sh_size);
+
+    return shdrs;
+}
+
+/** @brief Collects the byte ranges of all ".text.<kernel>" sections in a cubin's bytes. */
+std::map<std::string, TextSectionRange> collectTextSections(const std::string& bytes) {
+    std::string shstrtab;
+    const std::vector<ELFIO::Elf64_Shdr> shdrs = parseSectionHeaders(bytes, shstrtab);
 
     std::map<std::string, TextSectionRange> secDict;
     for (const ELFIO::Elf64_Shdr& shdr : shdrs) {
         const std::string name = readCString(shstrtab, shdr.sh_name);
         if (name.rfind(".text.", 0) == 0) {
+            checkBinRange(bytes.size(), shdr.sh_offset, shdr.sh_size, "section \"" + name + "\"");
             secDict[name] = TextSectionRange{shdr.sh_offset, shdr.sh_size};
         }
     }
@@ -75,6 +115,12 @@ std::map<std::string, TextSectionRange> collectTextSections(const std::string& b
 /** @brief Sets the desc-show bit on every instruction word within the given byte ranges. */
 void setDescBitInRanges(std::string& bytes, const std::map<std::string, TextSectionRange>& secDict) {
     for (const auto& [name, range] : secDict) {
+        if (range.size % 16 != 0) {
+            throw std::runtime_error("Malformed cubin: text section \"" + name + "\" size " +
+                                      std::to_string(range.size) + " is not a multiple of 16!");
+        }
+        checkBinRange(bytes.size(), range.offset, range.size, "text section \"" + name + "\"");
+
         for (std::uint64_t off = 0; off < range.size; off += 16) {
             std::uint64_t q2;
             std::memcpy(&q2, bytes.data() + range.offset + off + 8, sizeof(q2));
@@ -129,22 +175,14 @@ struct NamedElfSection {
 
 /** @brief Collects the name and raw data of every ELF section whose name starts with prefix. */
 std::vector<NamedElfSection> collectSectionsByPrefix(const std::string& bytes, const std::string& prefix) {
-    ELFIO::Elf64_Ehdr ehdr{};
-    std::memcpy(&ehdr, bytes.data(), sizeof(ehdr));
-
-    std::vector<ELFIO::Elf64_Shdr> shdrs(ehdr.e_shnum);
-    for (std::uint16_t i = 0; i < ehdr.e_shnum; ++i) {
-        const std::size_t off = ehdr.e_shoff + static_cast<std::size_t>(i) * ehdr.e_shentsize;
-        std::memcpy(&shdrs[i], bytes.data() + off, sizeof(ELFIO::Elf64_Shdr));
-    }
-
-    const ELFIO::Elf64_Shdr& shstrtabHdr = shdrs[ehdr.e_shstrndx];
-    const std::string shstrtab = bytes.substr(shstrtabHdr.sh_offset, shstrtabHdr.sh_size);
+    std::string shstrtab;
+    const std::vector<ELFIO::Elf64_Shdr> shdrs = parseSectionHeaders(bytes, shstrtab);
 
     std::vector<NamedElfSection> result;
     for (const ELFIO::Elf64_Shdr& shdr : shdrs) {
         const std::string name = readCString(shstrtab, shdr.sh_name);
         if (name.rfind(prefix, 0) == 0) {
+            checkBinRange(bytes.size(), shdr.sh_offset, shdr.sh_size, "section \"" + name + "\"");
             result.push_back({name, bytes.substr(shdr.sh_offset, shdr.sh_size)});
         }
     }
@@ -457,7 +495,7 @@ void updateReposWithPTX(CuInsAssemblerRepos& repos, const std::string& ptxname, 
 
     try {
         transPTXVersion(ptxname, "", arch);
-        checkOutput({"ptxas", "-arch", arch, "-o", binname, ptxname});
+        checkOutput({"ptxas", "-arch", arch, "-o", binname, ptxname}, /*mergeStderr=*/false);
         updateReposWithCubin(repos, binname, savname);
     } catch (const CalledProcessError& cpe) {
         CuAsmLogger::logWarning(trim(cpe.output()));
@@ -499,9 +537,9 @@ void CudaBinFile::dumpFile(const std::string& fname, std::string arch, std::stri
 
     const std::string xopt = "-x" + ftype;
     if (ftype == "elf") {
-        checkOutput({"cuobjdump", xopt, fname, "-arch", arch, mName});
+        checkOutput({"cuobjdump", xopt, fname, "-arch", arch, mName}, /*mergeStderr=*/false);
     } else if (ftype == "ptx") {
-        checkOutput({"cuobjdump", xopt, fname, mName});
+        checkOutput({"cuobjdump", xopt, fname, mName}, /*mergeStderr=*/false);
     }
 }
 
@@ -586,9 +624,9 @@ std::vector<std::string> CudaBinFile::listFile(const std::string& ftype, const s
     std::string outlist;
     try {
         if (ftype == "elf") {
-            outlist = checkOutput({"cuobjdump", lopt, "-arch", arch, mName});
+            outlist = checkOutput({"cuobjdump", lopt, "-arch", arch, mName}, /*mergeStderr=*/false);
         } else if (ftype == "ptx") { // no arch specifier for ptx, may be modified
-            outlist = checkOutput({"cuobjdump", lopt, mName});
+            outlist = checkOutput({"cuobjdump", lopt, mName}, /*mergeStderr=*/false);
         }
     } catch (const CalledProcessError& cpe) {
         CuAsmLogger::logError(cpe.output());
@@ -769,13 +807,11 @@ bool fixCubinDesc(const std::string& fin, const std::string& fout) {
     }
 
     // Set the desc bit only on those instructions, starting from the original (unmodified) bytes.
+    // secDict.at() throws std::out_of_range for a kernel with no matching .text section, mirroring
+    // python's sec_dict[secname] raising KeyError rather than silently skipping the kernel.
     std::string outBytes = fbytes;
     for (const auto& [kname, addrList] : descDict) {
-        const auto it = secDict.find(".text." + kname);
-        if (it == secDict.end()) {
-            continue;
-        }
-        const TextSectionRange& range = it->second;
+        const TextSectionRange& range = secDict.at(".text." + kname);
         for (const std::uint64_t addr : addrList) {
             const std::uint64_t offset = range.offset + addr + 8;
             std::uint64_t q2;

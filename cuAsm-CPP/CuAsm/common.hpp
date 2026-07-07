@@ -46,12 +46,14 @@ private:
 };
 
 /**
- * @brief Runs a command and captures its combined stdout/stderr, mirroring python's
- *        subprocess.check_output().
+ * @brief Runs a command and captures its stdout, mirroring python's subprocess.check_output().
  * @param args Command and arguments, with args[0] as the executable name.
+ * @param mergeStderr If true, stderr is redirected into the captured output too, mirroring
+ *        passing stderr=STDOUT to check_output(); if false (the python default), only stdout
+ *        is captured and stderr passes through to the calling process's own stderr.
  * @return The captured output of the process.
  **/
-std::string checkOutput(const std::vector<std::string>& args);
+std::string checkOutput(const std::vector<std::string>& args, bool mergeStderr = true);
 
 /**
  * @brief Gets a temporary filename in the system temp dir, mirroring CuAsm.common.getTempFileName.

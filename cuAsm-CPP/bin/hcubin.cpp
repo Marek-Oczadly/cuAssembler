@@ -182,7 +182,7 @@ int main(int argc, char** argv) {
     if (args.logfile.has_value()) {
         CuAsm::CuAsmLogger::initLogger(args.logfile.value(), fileLevel, stdoutLevel);
     } else {
-        CuAsm::CuAsmLogger::initLogger("", stdoutLevel, stdoutLevel);
+        CuAsm::CuAsmLogger::initLogger("", fileLevel, stdoutLevel, "cuasm", std::size_t(1) << 30, 3, false);
     }
 
     if (!hcubin(infile, outfile)) {

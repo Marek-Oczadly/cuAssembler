@@ -102,7 +102,7 @@ const std::string& CalledProcessError::output() const noexcept {
     return m_output;
 }
 
-std::string checkOutput(const std::vector<std::string>& args) {
+std::string checkOutput(const std::vector<std::string>& args, bool mergeStderr) {
     std::string cmd;
     for (std::size_t i = 0; i < args.size(); ++i) {
         if (i > 0) {
@@ -110,7 +110,9 @@ std::string checkOutput(const std::vector<std::string>& args) {
         }
         cmd += quoteArg(args[i]);
     }
-    cmd += " 2>&1";
+    if (mergeStderr) {
+        cmd += " 2>&1";
+    }
 
     FILE* pipe = popen(cmd.c_str(), "r");
     if (pipe == nullptr) {

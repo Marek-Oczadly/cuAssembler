@@ -101,12 +101,22 @@ std::string segTypeName(std::uint32_t type) {
 
 /** @brief printf-style formatting into a std::string, used to mirror python's '%' formatting. */
 std::string format(const char* fmt, ...) {
-    char buf[512];
     va_list args;
     va_start(args, fmt);
-    std::vsnprintf(buf, sizeof(buf), fmt, args);
+    va_list argsCopy;
+    va_copy(argsCopy, args);
+    const int needed = std::vsnprintf(nullptr, 0, fmt, argsCopy);
+    va_end(argsCopy);
+
+    if (needed < 0) {
+        va_end(args);
+        return std::string();
+    }
+
+    std::string result(static_cast<std::size_t>(needed), '\0');
+    std::vsnprintf(result.data(), static_cast<std::size_t>(needed) + 1, fmt, args);
     va_end(args);
-    return std::string(buf);
+    return result;
 }
 
 } // namespace
@@ -639,7 +649,7 @@ void CubinFile::saveAsCuAsm(const std::string& asmName) {
 std::string CubinFile::disassembleCubin(const std::string& binName) {
     return CuAsmLogger::logTimeIt("CubinFile::disassembleCubin", [](const std::string& name) {
         CuAsmLogger::logProcedure("Disassembling " + name + "...");
-        return checkOutput({Config::NVDISASM_PATH, name});
+        return checkOutput({Config::NVDISASM_PATH, name}, /*mergeStderr=*/false);
     })(binName);
 }
 

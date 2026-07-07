@@ -193,6 +193,15 @@ std::int64_t resolveHeaderInt(const HeaderValue& v) {
     return resolveNamedConstant(s);
 }
 
+/**
+ * @brief Checks whether a HeaderValue is exactly the given symbolic name, mirroring Python's
+ *        raw `header['type'] == 'SHT_NULL'` string comparison (never resolves numeric spellings
+ *        of the same constant, e.g. `.__section_type 8` is not treated as SHT_NOBITS).
+ */
+bool isHeaderTypeNamed(const HeaderValue& v, const std::string& name) {
+    return std::holds_alternative<std::string>(v) && std::get<std::string>(v) == name;
+}
+
 /** @brief Builds the string-keyed dict of NUL-terminated strings within a strtab/shstrtab section. */
 std::map<std::uint32_t, std::string> buildStringDict(const std::string& bytelist) {
     std::map<std::uint32_t, std::string> sdict;
@@ -338,7 +347,7 @@ public:
             else if (attr == "addralign") sectionHeader.sh_addralign = static_cast<ELFIO::Elf_Xword>(iv);
         }
 
-        if (header.count("type") && resolveHeaderInt(header.at("type")) == ELFIO::SHT_NULL) {
+        if (header.count("type") && isHeaderTypeNamed(header.at("type"), "SHT_NULL")) {
             sectionHeader.sh_offset = 0;
         } else {
             sectionHeader.sh_offset = offset;
@@ -469,7 +478,7 @@ public:
 
     /** @brief Writes this section's data (and padding) to a stream, mirroring writePaddedData. */
     void writePaddedData(std::ostream& os) const {
-        if (header.count("type") && resolveHeaderInt(header.at("type")) == ELFIO::SHT_NOBITS) {
+        if (header.count("type") && isHeaderTypeNamed(header.at("type"), "SHT_NOBITS")) {
             return;
         }
         os.write(m_data.data(), static_cast<std::streamsize>(m_data.size()));
@@ -1333,7 +1342,7 @@ void CuAsmParser::Impl::layoutSections() {
         shEdges[secname] = Edge{fileOffset, 0, memOffset, 0};
 
         memOffset += sec.size;
-        bool isNobits = sec.header.count("type") && resolveHeaderInt(sec.header.at("type")) == ELFIO::SHT_NOBITS;
+        bool isNobits = sec.header.count("type") && isHeaderTypeNamed(sec.header.at("type"), "SHT_NOBITS");
         if (!isNobits) {
             fileOffset += sec.size;
         }
@@ -1354,7 +1363,7 @@ void CuAsmParser::Impl::layoutSections() {
         sec.size = sec.getDataSize();
         sec.header["size"] = static_cast<std::int64_t>(sec.size);
 
-        bool isNobits = sec.header.count("type") && resolveHeaderInt(sec.header.at("type")) == ELFIO::SHT_NOBITS;
+        bool isNobits = sec.header.count("type") && isHeaderTypeNamed(sec.header.at("type"), "SHT_NOBITS");
         std::uint64_t fsize = isNobits ? 0 : sec.size;
         std::uint64_t msize = sec.size;
 
@@ -1872,7 +1881,7 @@ std::pair<std::uint64_t, std::uint64_t> CuAsmParser::Impl::updateSectionPadding(
         return {newFileOffset, newMemOffset};
     }
 
-    bool isNobits = sec->header.count("type") && resolveHeaderInt(sec->header.at("type")) == ELFIO::SHT_NOBITS;
+    bool isNobits = sec->header.count("type") && isHeaderTypeNamed(sec->header.at("type"), "SHT_NOBITS");
     if (isNobits) {
         auto [newMemOffset, mpadsize] = alignTo(memOffset, align);
         sec->padsize = mpadsize;
