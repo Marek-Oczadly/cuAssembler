@@ -158,6 +158,17 @@ public:
     int update(CuInsFeeder& feeder);
 
     /**
+     * @brief Updates the repos with records pulled from an arbitrary generator function, mirroring
+     *        python's duck-typed feeder support in CuInsAssemblerRepos.update (accepts any iterable
+     *        of (addr, code, asm, ctrl) tuples, not just a CuInsFeeder) -- used e.g. by
+     *        CubinUtils::transDescFeeder, which wraps a CuInsFeeder to rewrite codes before they
+     *        reach here.
+     * @param next Callable returning the next record, or std::nullopt once exhausted.
+     * @return The number of new records added; 0 if nothing changed.
+     **/
+    int update(const std::function<std::optional<InsFeederRecord>()>& next);
+
+    /**
      * @brief Rebuilds every instruction assembler from its own originally recorded (addr, code,
      *        asm) samples, mirroring CuInsAssemblerRepos.rebuild. Needed after CuInsParser changes
      *        the meaning of some instruction's values/modifiers.

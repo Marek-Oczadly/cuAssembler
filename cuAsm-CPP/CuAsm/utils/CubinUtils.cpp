@@ -1,14 +1,25 @@
 #include "CubinUtils.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <map>
+#include <regex>
 #include <sstream>
+#include <stdexcept>
 #include <vector>
 
 #include <elfio/elf_types.hpp>
+
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 #include "../CuAsmLogger.hpp"
 #include "../CuInsFeeder.hpp"
@@ -73,8 +84,634 @@ void setDescBitInRanges(std::string& bytes, const std::map<std::string, TextSect
     }
 }
 
+/** @brief Reads a whole file's contents into a string, mirroring python's open(path, 'rb').read(). */
+std::string readFileBytes(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        throw std::runtime_error("Cannot open file " + path);
+    }
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+/** @brief Strips leading/trailing whitespace, mirroring python's str.strip(). */
+std::string trim(const std::string& s) {
+    std::size_t begin = 0;
+    while (begin < s.size() && std::isspace(static_cast<unsigned char>(s[begin]))) {
+        ++begin;
+    }
+    std::size_t end = s.size();
+    while (end > begin && std::isspace(static_cast<unsigned char>(s[end - 1]))) {
+        --end;
+    }
+    return s.substr(begin, end - begin);
+}
+
+/** @brief Replaces every occurrence of a literal substring, mirroring python's str.replace(old, new). */
+std::string replaceAll(std::string s, const std::string& from, const std::string& to) {
+    if (from.empty()) {
+        return s;
+    }
+    std::size_t pos = 0;
+    while ((pos = s.find(from, pos)) != std::string::npos) {
+        s.replace(pos, from.size(), to);
+        pos += to.size();
+    }
+    return s;
+}
+
+/** @brief One ELF section's name and raw contents. */
+struct NamedElfSection {
+    std::string name;
+    std::string data;
+};
+
+/** @brief Collects the name and raw data of every ELF section whose name starts with prefix. */
+std::vector<NamedElfSection> collectSectionsByPrefix(const std::string& bytes, const std::string& prefix) {
+    ELFIO::Elf64_Ehdr ehdr{};
+    std::memcpy(&ehdr, bytes.data(), sizeof(ehdr));
+
+    std::vector<ELFIO::Elf64_Shdr> shdrs(ehdr.e_shnum);
+    for (std::uint16_t i = 0; i < ehdr.e_shnum; ++i) {
+        const std::size_t off = ehdr.e_shoff + static_cast<std::size_t>(i) * ehdr.e_shentsize;
+        std::memcpy(&shdrs[i], bytes.data() + off, sizeof(ELFIO::Elf64_Shdr));
+    }
+
+    const ELFIO::Elf64_Shdr& shstrtabHdr = shdrs[ehdr.e_shstrndx];
+    const std::string shstrtab = bytes.substr(shstrtabHdr.sh_offset, shstrtabHdr.sh_size);
+
+    std::vector<NamedElfSection> result;
+    for (const ELFIO::Elf64_Shdr& shdr : shdrs) {
+        const std::string name = readCString(shstrtab, shdr.sh_name);
+        if (name.rfind(prefix, 0) == 0) {
+            result.push_back({name, bytes.substr(shdr.sh_offset, shdr.sh_size)});
+        }
+    }
+    return result;
+}
+
+/** @brief Formats a CuNVInfoValue the way python's f'{val}' would, for log messages. */
+std::string formatNVInfoValueForLog(const CuNVInfoValue& val) {
+    if (std::holds_alternative<std::monostate>(val)) {
+        return "None";
+    }
+    if (std::holds_alternative<std::uint32_t>(val)) {
+        return std::to_string(std::get<std::uint32_t>(val));
+    }
+    const auto& vec = std::get<std::vector<std::uint32_t>>(val);
+    std::string s = "[";
+    for (std::size_t i = 0; i < vec.size(); ++i) {
+        if (i > 0) {
+            s += ", ";
+        }
+        s += std::to_string(vec[i]);
+    }
+    s += "]";
+    return s;
+}
+
+/** @brief Converts one glob path component ('*'/'?' wildcards) into an equivalent regex. */
+std::string globComponentToRegex(const std::string& comp) {
+    std::string re;
+    for (char c : comp) {
+        switch (c) {
+            case '*': re += ".*"; break;
+            case '?': re += '.'; break;
+            case '.': re += "\\."; break;
+            case '\\': re += "\\\\"; break;
+            case '+': re += "\\+"; break;
+            case '^': re += "\\^"; break;
+            case '$': re += "\\$"; break;
+            case '(': re += "\\("; break;
+            case ')': re += "\\)"; break;
+            case '[': re += "\\["; break;
+            case ']': re += "\\]"; break;
+            case '{': re += "\\{"; break;
+            case '}': re += "\\}"; break;
+            case '|': re += "\\|"; break;
+            default: re += c;
+        }
+    }
+    return re;
+}
+
+/** @brief Yields file (not directory) paths matching a shell-style glob pattern, mirroring
+ *         python's glob.iglob to the extent needed here: wildcards ('*'/'?') are only supported in
+ *         the final path component -- directory components of the pattern must be literal. Also
+ *         mirrors f_glob's skip-directories behavior. */
+std::vector<std::string> globFiles(const std::string& pattern) {
+    namespace fs = std::filesystem;
+    std::string normalized = pattern;
+    std::replace(normalized.begin(), normalized.end(), '\\', '/');
+
+    const std::size_t slashPos = normalized.find_last_of('/');
+    const fs::path dir = (slashPos == std::string::npos) ? fs::path(".") : fs::path(normalized.substr(0, slashPos));
+    const std::string filePattern = (slashPos == std::string::npos) ? normalized : normalized.substr(slashPos + 1);
+
+    std::vector<std::string> result;
+    std::error_code ec;
+    if (!fs::is_directory(dir, ec)) {
+        return result;
+    }
+
+    const std::regex re(globComponentToRegex(filePattern));
+    for (const auto& entry : fs::directory_iterator(dir, ec)) {
+        std::error_code fileEc;
+        if (!entry.is_regular_file(fileEc)) {
+            continue;
+        }
+        const std::string name = entry.path().filename().string();
+        if (std::regex_match(name, re)) {
+            result.push_back((dir / name).string());
+        }
+    }
+    std::sort(result.begin(), result.end());
+    return result;
+}
+
+/** @brief Moves a file, falling back to copy+remove across filesystems, mirroring shutil.move. */
+void moveFile(const std::string& src, const std::string& dst) {
+    std::error_code ec;
+    std::filesystem::rename(src, dst, ec);
+    if (ec) {
+        std::filesystem::copy_file(src, dst, std::filesystem::copy_options::overwrite_existing);
+        std::filesystem::remove(src);
+    }
+}
+
+/** @brief Formats a "idx/total" progress string, mirroring python's f'{idx:4d}/{total}'. */
+std::string formatProgress(std::size_t idx, std::size_t total) {
+    std::ostringstream oss;
+    oss << std::setw(4) << idx << "/" << total;
+    return oss.str();
+}
+
+/** @brief Builds a per-process temp file name, mirroring CudaBinFile's f'cuasm_{pid:x}.tmp.{suffix}'. */
+std::string tempNameForPid(const std::string& suffix) {
+    std::ostringstream oss;
+#ifdef _WIN32
+    const int pid = _getpid();
+#else
+    const int pid = getpid();
+#endif
+    oss << "cuasm_" << std::hex << pid << ".tmp." << suffix;
+    return oss.str();
+}
+
+/// Instruction filter regex excluding lines containing "QNAN", mirroring CubinUtils.f_QNAN
+/// (`lambda x: 'QNAN' not in x`) -- CuInsFeeder's insFilter only supports "keep if regex matches",
+/// so exclusion is expressed via a negative lookahead spanning the whole line.
+const char* const QNAN_EXCLUDE_FILTER = R"(^(?:(?!QNAN).)*$)";
+
+/// Regex mirroring CubinUtils.arch_pattern, used to auto-detect arch from a dumped file's name.
+const std::regex& archPatternRe() {
+    static const std::regex re(R"(\.(sm_\d+)\.(cubin|ptx)$)");
+    return re;
+}
+
+/// Regex mirroring CubinUtils.fname_pattern, used to parse `cuobjdump -lelf/-lptx` list lines.
+const std::regex& fnamePatternRe() {
+    static const std::regex re(R"(file *(\d+): *(.*)$)");
+    return re;
+}
+
+/** @brief Parses one `cuobjdump -lelf/-lptx` list line, mirroring CubinUtils.parseListLine.
+ *  @return The extracted file name, or std::nullopt if the line didn't match. */
+std::optional<std::string> parseListLine(const std::string& line) {
+    std::smatch m;
+    if (!std::regex_search(line, m, fnamePatternRe())) {
+        return std::nullopt;
+    }
+    return trim(m.str(2));
+}
+
 } // namespace
 
+const BigInt pShowDesc = BigInt(1) << 101;
+
+void transPTXVersion(const std::string& ptxname, const std::string& outname, const std::string& arch, const std::string& version) {
+    static const std::regex targetPattern(R"(^\s*\.target\s+)");
+    static const std::regex versionPattern(R"(^\s*\.version\s+)");
+
+    std::ostringstream sio;
+    {
+        std::ifstream fin(ptxname);
+        if (!fin) {
+            throw std::runtime_error("Cannot open ptx file " + ptxname);
+        }
+        std::string line;
+        while (std::getline(fin, line)) {
+            if (std::regex_search(line, targetPattern)) {
+                sio << ".target " << arch << "\n";
+            } else if (std::regex_search(line, versionPattern)) {
+                sio << ".version " << version << "\n";
+            } else {
+                sio << line << "\n";
+            }
+        }
+    }
+
+    const std::string resolvedOutname = outname.empty() ? ptxname : outname;
+    std::ofstream fout(resolvedOutname);
+    fout << sio.str();
+}
+
+void feedBinFromCubin(const std::string& binname, const std::function<void(const std::string&)>& callback,
+                       const std::string& outname, bool mergeAllKernels) {
+    std::string resolvedOutname = outname;
+    if (resolvedOutname.empty()) {
+        static const std::string cubinSuffix = ".cubin";
+        if (binname.size() >= cubinSuffix.size() && binname.compare(binname.size() - cubinSuffix.size(), cubinSuffix.size(), cubinSuffix) == 0) {
+            resolvedOutname = replaceAll(binname, cubinSuffix, ".bin");
+        } else {
+            resolvedOutname = binname + ".bin";
+        }
+    }
+
+    const std::string fbytes = readFileBytes(binname);
+    const std::vector<NamedElfSection> sections = collectSectionsByPrefix(fbytes, ".text");
+
+    if (mergeAllKernels) {
+        bool isEmpty = true;
+        {
+            std::ofstream fout(resolvedOutname, std::ios::binary);
+            for (const NamedElfSection& sec : sections) {
+                fout.write(sec.data.data(), static_cast<std::streamsize>(sec.data.size()));
+                isEmpty = false;
+            }
+        }
+        if (!isEmpty) {
+            callback(resolvedOutname);
+        }
+    } else {
+        for (const NamedElfSection& sec : sections) {
+            {
+                std::ofstream fout(resolvedOutname, std::ios::binary);
+                fout.write(sec.data.data(), static_cast<std::streamsize>(sec.data.size()));
+            }
+            callback(resolvedOutname);
+        }
+    }
+}
+
+std::function<std::optional<InsFeederRecord>()> transDescFeeder(CuInsFeeder& feeder) {
+    return [&feeder]() -> std::optional<InsFeederRecord> {
+        const auto rec = feeder.next();
+        if (!rec) {
+            return std::nullopt;
+        }
+        BigInt code = rec->code;
+        if (rec->asmText.find("desc") == std::string::npos) {
+            code ^= (code & pShowDesc); // clear the desc-show bit
+        }
+        return InsFeederRecord{rec->addr, code, rec->asmText, 0};
+    };
+}
+
+void updateReposWithCubin(CuInsAssemblerRepos& repos, const std::string& binname_, const std::string& savname, bool useNvdisasm,
+                          bool doDescHack, bool mergeAllKernels) {
+    std::string binname = binname_;
+    const std::string arch = repos.getArchString(); // such as "sm_75"
+    std::string bArch = arch;
+    bArch.erase(std::remove(bArch.begin(), bArch.end(), '_'), bArch.end());
+    std::transform(bArch.begin(), bArch.end(), bArch.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+
+    bool useDescTrans = false;
+    if (doDescHack && repos.getSMVersion().needsDescHack()) {
+        const std::filesystem::path binPath(binname);
+        const std::filesystem::path hbinPath = binPath.parent_path() / ("hack." + binPath.filename().string());
+        hackCubinDesc(binname, hbinPath.string());
+        binname = hbinPath.string();
+        useDescTrans = true;
+    }
+
+    try {
+        if (useNvdisasm) {
+            // text sections will be written into a new file and disassembled as binary
+            int ncnt = 0;
+            feedBinFromCubin(
+                binname,
+                [&](const std::string& outname) {
+                    // NOTE: disassemble from binary will not show fixups, just raw disassembly
+                    const std::string sass = checkOutput({Config::NVDISASM_PATH, "-hex", "-c", "-b", bArch, outname});
+                    std::istringstream sio(sass);
+                    CuInsFeeder feeder(sio, "", QNAN_EXCLUDE_FILTER); // filter QNAN for build
+
+                    if (useDescTrans) {
+                        const auto gen = transDescFeeder(feeder);
+                        ncnt += repos.update(gen);
+                    } else {
+                        ncnt += repos.update(feeder);
+                    }
+                },
+                "", mergeAllKernels);
+
+            if (ncnt > 0 && !savname.empty()) { // only save when changed
+                repos.save2file(savname);
+            }
+        } else {
+            const std::string sass = checkOutput({"cuobjdump", "-sass", binname});
+            std::istringstream sio(sass);
+            CuInsFeeder feeder(sio, "", QNAN_EXCLUDE_FILTER); // filter QNAN for build
+
+            if (useDescTrans) {
+                const auto gen = transDescFeeder(feeder);
+                repos.update(gen);
+            } else {
+                repos.update(feeder);
+            }
+        }
+    } catch (const CalledProcessError& cpe) {
+        CuAsmLogger::logWarning(trim(cpe.output()));
+        CuAsmLogger::resetIndent();
+        return;
+    } catch (const std::exception& e) {
+        CuAsmLogger::logError(std::string("Unknown subprocess error (") + e.what() + ")! ");
+        CuAsmLogger::resetIndent();
+        return;
+    }
+}
+
+void updateUnknownNVInfoWithCubin(const std::string& binname, std::map<std::string, CuNVInfoValue>& unknownNVInfo) {
+    const std::string fbytes = readFileBytes(binname);
+    const std::vector<NamedElfSection> sections = collectSectionsByPrefix(fbytes, ".nv.info.");
+
+    for (const NamedElfSection& sec : sections) {
+        const std::vector<std::uint8_t> data(sec.data.begin(), sec.data.end());
+        CuNVInfo nvinfo(data);
+
+        for (const CuNVInfoAttr& attr : nvinfo.m_AttrList) {
+            if (!unknownNVInfo.count(attr.name)) {
+                CuAsmLogger::logWarning("Unknown NVInfo Attr (" + attr.name + ") : (" + formatNVInfoValueForLog(attr.value) + ")");
+                unknownNVInfo[attr.name] = attr.value;
+            }
+        }
+    }
+}
+
+void updateReposWithPTX(CuInsAssemblerRepos& repos, const std::string& ptxname, const std::string& savname) {
+    static const std::regex ptxSuffix(R"(\.ptx$)");
+    const std::string binname = std::regex_replace(ptxname, ptxSuffix, ".cubin");
+    const std::string arch = repos.getArchString();
+
+    try {
+        transPTXVersion(ptxname, "", arch);
+        checkOutput({"ptxas", "-arch", arch, "-o", binname, ptxname});
+        updateReposWithCubin(repos, binname, savname);
+    } catch (const CalledProcessError& cpe) {
+        CuAsmLogger::logWarning(trim(cpe.output()));
+        CuAsmLogger::resetIndent();
+        return;
+    } catch (const std::exception& e) {
+        CuAsmLogger::logError(std::string("Unknown subprocess error (") + e.what() + ")! ");
+        CuAsmLogger::resetIndent();
+        return;
+    }
+}
+
+CudaBinFile::CudaBinFile(const std::string& name)
+    : mName(name), mTempBinName(tempNameForPid("cubin")), mTempPTXName(tempNameForPid("ptx")) {}
+
+void CudaBinFile::resetFileName(const std::string& name) { mName = name; }
+
+void CudaBinFile::dumpFile(const std::string& fname, std::string arch, std::string ftype) {
+    if (ftype.empty()) {
+        static const std::string cubinSuffix = ".cubin";
+        static const std::string ptxSuffix = ".ptx";
+        if (fname.size() >= cubinSuffix.size() && fname.compare(fname.size() - cubinSuffix.size(), cubinSuffix.size(), cubinSuffix) == 0) {
+            ftype = "elf";
+        } else if (fname.size() >= ptxSuffix.size() && fname.compare(fname.size() - ptxSuffix.size(), ptxSuffix.size(), ptxSuffix) == 0) {
+            ftype = "ptx";
+        } else {
+            throw std::runtime_error("Unknown file type for " + fname + "!!!");
+        }
+    }
+
+    if (arch.empty()) {
+        std::smatch m;
+        if (std::regex_search(fname, m, archPatternRe())) {
+            arch = m.str(1);
+        } else {
+            throw std::runtime_error("Cannot determine arch for " + fname + "!!!");
+        }
+    }
+
+    const std::string xopt = "-x" + ftype;
+    if (ftype == "elf") {
+        checkOutput({"cuobjdump", xopt, fname, "-arch", arch, mName});
+    } else if (ftype == "ptx") {
+        checkOutput({"cuobjdump", xopt, fname, mName});
+    }
+}
+
+std::map<std::string, CuNVInfoValue>& CudaBinFile::updateUnknownNVInfo(const std::string& arch,
+                                                                        std::map<std::string, CuNVInfoValue>& unknownNVInfo) {
+    const std::vector<std::string> elflist = listFile("elf", arch);
+    const std::size_t nelf = elflist.size();
+    for (std::size_t ielf = 0; ielf < nelf; ++ielf) {
+        const std::string& fname = elflist[ielf];
+        try {
+            dumpFile(fname, arch);
+            moveFile(fname, mTempBinName);
+
+            CuAsmLogger::logProcedure("#### " + formatProgress(ielf, nelf) + " : Updating with " + fname + " ...");
+            updateUnknownNVInfoWithCubin(mTempBinName, unknownNVInfo);
+        } catch (const CalledProcessError& cpe) {
+            CuAsmLogger::logError(cpe.output());
+            continue;
+        } catch (const std::exception& e) {
+            CuAsmLogger::logError(e.what());
+            continue;
+        }
+    }
+
+    return unknownNVInfo;
+}
+
+std::vector<std::string> CudaBinFile::iterELF(const std::string& arch) { return listFile("elf", arch); }
+
+std::vector<std::string> CudaBinFile::iterPTX() { return listFile("ptx", ""); }
+
+void CudaBinFile::updateRepos(CuInsAssemblerRepos& repos, const std::string& savename, const std::set<std::string>& ftype) {
+    std::string arch = repos.getArchString();
+    std::transform(arch.begin(), arch.end(), arch.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    if (ftype.count("elf")) {
+        const std::vector<std::string> elflist = listFile("elf", arch);
+        const std::size_t nelf = elflist.size();
+        for (std::size_t ielf = 0; ielf < nelf; ++ielf) {
+            const std::string& fname = elflist[ielf];
+            try {
+                dumpFile(fname, arch);
+                moveFile(fname, mTempBinName);
+                CuAsmLogger::logProcedure("#### " + formatProgress(ielf, nelf) + " : Updating with " + fname + " ...");
+                updateReposWithCubin(repos, mTempBinName, savename);
+            } catch (const CalledProcessError& cpe) {
+                CuAsmLogger::logError(cpe.output());
+                continue;
+            } catch (const std::exception& e) {
+                CuAsmLogger::logError(e.what());
+                continue;
+            }
+        }
+    }
+
+    if (ftype.count("ptx")) {
+        const std::vector<std::string> ptxlist = listFile("ptx", "");
+        const std::size_t nptx = ptxlist.size();
+        for (std::size_t iptx = 0; iptx < nptx; ++iptx) {
+            const std::string& fname = ptxlist[iptx];
+            try {
+                dumpFile(fname, arch);
+                moveFile(fname, mTempPTXName);
+
+                transPTXVersion(mTempPTXName, "", arch);
+
+                CuAsmLogger::logProcedure("#### " + formatProgress(iptx, nptx) + " : Updating with " + fname + " ...");
+                updateReposWithPTX(repos, mTempPTXName, savename);
+            } catch (const CalledProcessError& cpe) {
+                CuAsmLogger::logError(cpe.output());
+                continue;
+            } catch (const std::exception& e) {
+                CuAsmLogger::logError(e.what());
+                continue;
+            }
+        }
+    }
+}
+
+std::vector<std::string> CudaBinFile::listFile(const std::string& ftype, const std::string& arch) {
+    const std::string lopt = "-l" + ftype;
+    std::string outlist;
+    try {
+        if (ftype == "elf") {
+            outlist = checkOutput({"cuobjdump", lopt, "-arch", arch, mName});
+        } else if (ftype == "ptx") { // no arch specifier for ptx, may be modified
+            outlist = checkOutput({"cuobjdump", lopt, mName});
+        }
+    } catch (const CalledProcessError& cpe) {
+        CuAsmLogger::logError(cpe.output());
+        return {};
+    } catch (const std::exception& e) {
+        CuAsmLogger::logError(e.what());
+        return {};
+    }
+
+    std::vector<std::string> flist;
+    std::istringstream iss(outlist);
+    std::string line;
+    while (std::getline(iss, line)) {
+        if (const auto fname = parseListLine(line)) {
+            flist.push_back(*fname);
+        }
+    }
+    return flist;
+}
+
+void CudaBinFile::iterProcess(const std::function<void(const std::string&)>& callback, const std::string& arch, const std::string& ftype) {
+    std::string tname;
+    if (ftype == "elf") {
+        tname = mTempBinName;
+    } else if (ftype == "ptx") {
+        tname = mTempPTXName;
+    } else {
+        throw std::runtime_error("Unknown ftype " + ftype + "!!!");
+    }
+
+    const std::vector<std::string> flist = listFile(ftype, arch);
+    const std::size_t nfile = flist.size();
+    for (std::size_t i = 0; i < nfile; ++i) {
+        const std::string& fname = flist[i];
+        try {
+            dumpFile(fname, arch, ftype);
+            moveFile(fname, tname);
+
+            CuAsmLogger::logProcedure("#### " + formatProgress(i, nfile) + " : Updating with " + fname + " ...");
+            callback(tname);
+        } catch (const CalledProcessError& cpe) {
+            CuAsmLogger::logError(cpe.output());
+            continue;
+        } catch (const std::exception& e) {
+            CuAsmLogger::logError(e.what());
+            continue;
+        }
+    }
+}
+
+void updateNVInfoForArch(const std::vector<std::string>& fpatternList, const std::string& arch) {
+    std::map<std::string, CuNVInfoValue> unknownNVInfo;
+
+    for (const std::string& fpattern : fpatternList) {
+        for (const std::string& fname : globFiles(fpattern)) {
+            CuAsmLogger::logEntry("Processing dll file " + fname);
+            try {
+                CudaBinFile cbf(fname);
+                cbf.updateUnknownNVInfo(arch, unknownNVInfo);
+            } catch (const std::exception& e) {
+                CuAsmLogger::logError(e.what());
+                continue;
+            }
+        }
+    }
+}
+
+void iterProcessFilesFromBinFiles(const std::vector<std::string>& fpatternList, const std::string& arch,
+                                   const std::function<void(const std::string&)>& callback, const std::string& ftype,
+                                   const std::function<void()>& callback2, const std::function<void()>& callback3) {
+    for (const std::string& fpattern : fpatternList) {
+        for (const std::string& fname : globFiles(fpattern)) {
+            CuAsmLogger::logEntry("#### Processing file " + fname);
+            try {
+                CudaBinFile cbf(fname);
+                cbf.iterProcess(callback, arch, ftype);
+                if (callback2) {
+                    callback2();
+                }
+            } catch (const std::exception& e) {
+                CuAsmLogger::logError(e.what());
+                CuAsmLogger::logError(e.what());
+                continue;
+            }
+        }
+
+        if (callback3) {
+            callback3();
+        }
+    }
+}
+
+bool hackCubinDesc(const std::string& fin, const std::string& fout, bool alwaysOutput) {
+    return CuAsmLogger::logTimeIt("hackCubinDesc", [&]() -> bool {
+        const std::string fbytes = readFileBytes(fin);
+        if (fbytes.size() < sizeof(ELFIO::Elf64_Ehdr)) {
+            throw std::runtime_error("Cubin file " + fin + " is too small to contain an ELF header!");
+        }
+
+        ELFIO::Elf64_Ehdr ehdr{};
+        std::memcpy(&ehdr, fbytes.data(), sizeof(ehdr));
+
+        const int smv = static_cast<int>(ehdr.e_flags & 0xff) / 10; // SM major version
+        if (smv < 8) {                                              // pre-Ampere, no need to hack
+            if (alwaysOutput) {
+                std::filesystem::copy_file(fin, fout, std::filesystem::copy_options::overwrite_existing);
+            }
+            return false;
+        }
+
+        const std::map<std::string, TextSectionRange> secDict = collectTextSections(fbytes);
+
+        std::string hackedBytes = fbytes;
+        setDescBitInRanges(hackedBytes, secDict);
+
+        std::ofstream foutStream(fout, std::ios::binary);
+        foutStream.write(hackedBytes.data(), static_cast<std::streamsize>(hackedBytes.size()));
+
+        return true;
+    })();
+}
+
+// @CuAsmLogger.logTimeIt
 bool fixCubinDesc(const std::string& fin, const std::string& fout) {
     std::string fbytes;
     {

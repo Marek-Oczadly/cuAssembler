@@ -757,6 +757,10 @@ int CuInsAssemblerRepos::update(CuInsFeeder& feeder) {
         m_InsAsmDict);
 }
 
+int CuInsAssemblerRepos::update(const std::function<std::optional<InsFeederRecord>()>& next) {
+    return updateFromGenerator(next, m_InsAsmDict);
+}
+
 void CuInsAssemblerRepos::rebuild() {
     CuAsmLogger::logTimeIt("CuInsAssemblerRepos::rebuild", [&]() {
         InsAsmDict tmp;
