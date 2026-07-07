@@ -332,8 +332,8 @@ std::vector<InsInfo> parseInsInfoList(Tokenizer& tz) {
     return out;
 }
 
-std::map<BigInt, InsInfo> parseErrRecordsDict(Tokenizer& tz) {
-    std::map<BigInt, InsInfo> out;
+std::vector<std::pair<BigInt, InsInfo>> parseErrRecordsDict(Tokenizer& tz) {
+    std::vector<std::pair<BigInt, InsInfo>> out;
     tz.takeExpected(Token::Type::LBrace, "{");
     while (tz.peek().type != Token::Type::RBrace) {
         const BigInt key = parseBigIntToken(tz.takeExpected(Token::Type::Num, "number").text);
@@ -345,7 +345,7 @@ std::map<BigInt, InsInfo> parseErrRecordsDict(Tokenizer& tz) {
         tz.takeExpected(Token::Type::Comma, ",");
         const std::string asmText = tz.takeExpected(Token::Type::Str, "string").text;
         tz.takeExpected(Token::Type::RParen, ")");
-        out[key] = InsInfo{addr.convert_to<std::uint64_t>(), code, asmText};
+        out.emplace_back(key, InsInfo{addr.convert_to<std::uint64_t>(), code, asmText});
         if (tz.peek().type == Token::Type::Comma) {
             tz.take();
         }
@@ -373,7 +373,7 @@ CuInsAssemblerState parseCuInsAssembler(Tokenizer& tz) {
     RationalMatrix valNullMat;
     RationalMatrix rhs;
     std::vector<InsInfo> insRecords;
-    std::map<BigInt, InsInfo> errRecords;
+    std::vector<std::pair<BigInt, InsInfo>> errRecords;
     std::optional<CuSMVersion> arch;
 
     while (tz.peek().type != Token::Type::RBrace) {
@@ -444,12 +444,14 @@ CuInsAssemblerRepos::InsAsmDict parseReposFile(const std::string& contents) {
     }
     tz.takeExpected(Token::Type::LParen, "(");
 
-    std::map<std::string, CuInsAssemblerState> states;
+    // Built directly in file order (rather than buffered through a sorted intermediate), so the
+    // resulting dict's iteration order mirrors python's insertion-ordered dict.
+    CuInsAssemblerRepos::InsAsmDict dict;
     tz.takeExpected(Token::Type::LBrace, "{");
     while (tz.peek().type != Token::Type::RBrace) {
         const std::string key = tz.takeExpected(Token::Type::Str, "string").text;
         tz.takeExpected(Token::Type::Colon, ":");
-        states.emplace(key, parseCuInsAssembler(tz));
+        dict.emplace(key, parseCuInsAssembler(tz));
         if (tz.peek().type == Token::Type::Comma) {
             tz.take();
         }
@@ -465,10 +467,6 @@ CuInsAssemblerRepos::InsAsmDict parseReposFile(const std::string& contents) {
     parseCuSMVersion(tz); // top-level repos arch; each assembler's own "Arch" field is authoritative
     tz.takeExpected(Token::Type::RParen, ")");
 
-    CuInsAssemblerRepos::InsAsmDict dict;
-    for (auto& [key, state] : states) {
-        dict.emplace(key, CuInsAssembler(state));
-    }
     return dict;
 }
 

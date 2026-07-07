@@ -39,11 +39,7 @@ std::string elfTypeName(std::uint16_t type) {
         case ELFIO::ET_EXEC: return "ET_EXEC";
         case ELFIO::ET_DYN: return "ET_DYN";
         case ELFIO::ET_CORE: return "ET_CORE";
-        default: {
-            std::ostringstream o;
-            o << "0x" << std::hex << type;
-            return o.str();
-        }
+        default: return std::to_string(type);
     }
 }
 
@@ -53,9 +49,7 @@ std::string elfMachineName(std::uint16_t machine) {
     if (machine == EM_CUDA) {
         return "EM_CUDA";
     }
-    std::ostringstream o;
-    o << "0x" << std::hex << machine;
-    return o.str();
+    return std::to_string(machine);
 }
 
 /** @brief Maps an ELF sh_type value to its symbolic name, mirroring pyelftools' ENUM_SH_TYPE. */
@@ -73,11 +67,7 @@ std::string shTypeName(std::uint32_t type) {
         case ELFIO::SHT_REL: return "SHT_REL";
         case ELFIO::SHT_SHLIB: return "SHT_SHLIB";
         case ELFIO::SHT_DYNSYM: return "SHT_DYNSYM";
-        default: {
-            std::ostringstream o;
-            o << "0x" << std::hex << type;
-            return o.str();
-        }
+        default: return std::to_string(type);
     }
 }
 
@@ -91,11 +81,7 @@ std::string segTypeName(std::uint32_t type) {
         case ELFIO::PT_NOTE: return "PT_NOTE";
         case ELFIO::PT_SHLIB: return "PT_SHLIB";
         case ELFIO::PT_PHDR: return "PT_PHDR";
-        default: {
-            std::ostringstream o;
-            o << "0x" << std::hex << type;
-            return o.str();
-        }
+        default: return std::to_string(type);
     }
 }
 

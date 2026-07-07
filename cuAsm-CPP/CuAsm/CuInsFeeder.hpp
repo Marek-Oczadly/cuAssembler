@@ -112,9 +112,11 @@ public:
     std::optional<CuInsRecord> next();
 
     /**
-     * @brief Closes the underlying stream if this feeder owns it (i.e. was constructed from a
-     *        file name), mirroring CuInsFeeder.close. A no-op returning false for feeders
-     *        constructed from an externally-owned stream, or if already closed.
+     * @brief Closes the underlying stream regardless of ownership, mirroring CuInsFeeder.close
+     *        (which unconditionally closes the stream it was handed, even one supplied
+     *        externally). Only takes effect when the stream is an std::ifstream (the only
+     *        stream type with a closeable, checkable-open state); a no-op returning false
+     *        otherwise, or if already closed.
      * @return True if a stream was actually closed.
      **/
     bool close();

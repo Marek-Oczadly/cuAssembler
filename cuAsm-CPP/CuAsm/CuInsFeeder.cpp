@@ -599,10 +599,11 @@ void CuInsFeeder::restart() {
 }
 
 bool CuInsFeeder::close() {
-    if (!m_OwnedFile.is_open()) {
+    auto* file = dynamic_cast<std::ifstream*>(m_Stream);
+    if (file == nullptr || !file->is_open()) {
         return false;
     }
-    m_OwnedFile.close();
+    file->close();
     m_LineNo = 0;
     return true;
 }

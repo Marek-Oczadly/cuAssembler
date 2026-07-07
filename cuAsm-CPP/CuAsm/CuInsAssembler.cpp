@@ -22,6 +22,25 @@ bool allModiKnown(const ModiSet& modiSet, const InsModi& modi) {
     return std::all_of(modi.begin(), modi.end(), [&](const std::string& m) { return indexOfModi(modiSet, m) >= 0; });
 }
 
+/// Backing store for m_ErrRecords; keyed lookups, mirroring dict lookup by key.
+using ErrRecords = std::vector<std::pair<BigInt, InsInfo>>;
+
+/** @brief Finds an error record by its code-diff key, mirroring dict lookup by key. */
+ErrRecords::iterator findErrRecord(ErrRecords& records, const BigInt& codeDiff) {
+    return std::find_if(records.begin(), records.end(), [&codeDiff](const auto& kv) { return kv.first == codeDiff; });
+}
+
+/** @brief Inserts or overwrites an error record, mirroring dict `__setitem__` (which preserves the
+ *         key's original position on overwrite instead of moving it to the end). */
+void setErrRecord(ErrRecords& records, const BigInt& codeDiff, const InsInfo& info) {
+    const auto it = findErrRecord(records, codeDiff);
+    if (it == records.end()) {
+        records.emplace_back(codeDiff, info);
+    } else {
+        it->second = info;
+    }
+}
+
 /** @brief python repr() of a plain string, mirroring the single-quoted string literals used
  *         throughout CuInsAssembler.__repr__. */
 std::string pyStrRepr(const std::string& s) {
@@ -354,9 +373,9 @@ CuInsAssembler::PushResult CuInsAssembler::push(const InsVals& vals, const InsMo
         const BigInt inscode = boost::multiprecision::numerator(inscodeRat);
         const BigInt codeDiff = inscode - code;
 
-        const auto it = m_ErrRecords.find(codeDiff);
+        const auto it = findErrRecord(m_ErrRecords, codeDiff);
         if (it == m_ErrRecords.end()) {
-            m_ErrRecords[codeDiff] = insInfo;
+            setErrRecord(m_ErrRecords, codeDiff, insInfo);
             CuAsmLogger::logError("Error when verifying for " + m_InsKey);
             CuAsmLogger::logError("    Asm : " + insInfo.asmText);
             CuAsmLogger::logError("    InputCode : " + m_Arch.formatCode(code));
@@ -375,7 +394,7 @@ CuInsAssembler::PushResult CuInsAssembler::push(const InsVals& vals, const InsMo
     oss << inscodeRat;
     CuAsmLogger::logCritical("    AsmCode   : (" + oss.str() + ")!");
 
-    m_ErrRecords[code] = insInfo;
+    setErrRecord(m_ErrRecords, code, insInfo);
     return {false, "NewConflict"};
 }
 

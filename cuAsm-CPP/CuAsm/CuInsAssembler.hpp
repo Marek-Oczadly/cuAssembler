@@ -1,9 +1,9 @@
 #pragma once
 
 #include <cstdint>
-#include <map>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "CuSMVersion.hpp"
@@ -59,7 +59,10 @@ struct CuInsAssemblerState {
     RationalMatrix valNullMat;
     RationalMatrix rhs;
     std::vector<InsInfo> insRecords;
-    std::map<BigInt, InsInfo> errRecords;
+    /// Insertion-ordered (addr, code, asm) records, mirroring the insertion-ordered dict
+    /// CuInsAssembler.m_ErrRecords relies on -- a std::map would reorder entries by code-diff
+    /// value instead of preserving discovery order.
+    std::vector<std::pair<BigInt, InsInfo>> errRecords;
     CuSMVersion arch;
 };
 
@@ -231,7 +234,8 @@ public:
     RationalMatrix m_Rhs;
 
     std::vector<InsInfo> m_InsRecords;
-    std::map<BigInt, InsInfo> m_ErrRecords;
+    /// Insertion-ordered, mirroring python's insertion-ordered dict; see CuInsAssemblerState::errRecords.
+    std::vector<std::pair<BigInt, InsInfo>> m_ErrRecords;
 
     CuSMVersion m_Arch;
 };

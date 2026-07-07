@@ -136,16 +136,45 @@ std::int64_t parsePyIntLiteral(const std::string& s) {
     const bool neg = !s.empty() && s.front() == '-';
     const std::string digits = neg ? s.substr(1) : s;
 
+    std::size_t pos = 0;
     std::int64_t value;
     if (digits.size() >= 2 && digits[0] == '0' && (digits[1] == 'x' || digits[1] == 'X')) {
-        value = static_cast<std::int64_t>(std::stoll(digits, nullptr, 16));
+        value = static_cast<std::int64_t>(std::stoll(digits, &pos, 16));
     } else {
         if (digits.size() > 1 && digits.front() == '0' && digits.find_first_not_of('0') != std::string::npos) {
             throw std::runtime_error("invalid decimal literal (leading zeros not permitted): " + s);
         }
-        value = static_cast<std::int64_t>(std::stoll(digits, nullptr, 10));
+        value = static_cast<std::int64_t>(std::stoll(digits, &pos, 10));
+    }
+    if (pos != digits.size()) {
+        throw std::runtime_error("invalid literal (trailing characters not permitted): " + s);
     }
     return neg ? -value : value;
+}
+
+/**
+ * @brief Parses a signed integer via std::stoll, requiring the entire string to be consumed,
+ *        mirroring Python's int(s, base) which raises ValueError on any trailing characters.
+ */
+std::int64_t parsePyInt(const std::string& s, int base = 10) {
+    std::size_t pos = 0;
+    std::int64_t value = std::stoll(s, &pos, base);
+    if (pos != s.size()) {
+        throw std::invalid_argument("invalid literal for int(): " + s);
+    }
+    return value;
+}
+
+/**
+ * @brief Unsigned counterpart of parsePyInt, mirroring Python's int(s, base) for unsigned contexts.
+ */
+std::uint64_t parsePyUInt(const std::string& s, int base = 10) {
+    std::size_t pos = 0;
+    std::uint64_t value = std::stoull(s, &pos, base);
+    if (pos != s.size()) {
+        throw std::invalid_argument("invalid literal for int(): " + s);
+    }
+    return value;
 }
 
 /**
@@ -389,14 +418,14 @@ public:
             throw std::runtime_error("Invalid register number " + std::to_string(*regnum) + " for section " + name + "!");
         }
 
-        std::int64_t rinfo = header.count("info") ? resolveHeaderInt(header.at("info")) : 0;
+        std::int64_t rinfo = resolveHeaderInt(header.at("info"));
         header["info"] = (rinfo & 0x00ffffffLL) + (static_cast<std::int64_t>(*regnum) << 24);
         extra["regnum"] = *regnum;
 
         if (barnum > 15) {
             throw std::runtime_error("Invalid barrier number " + std::to_string(barnum) + " for section " + name + "!");
         }
-        std::int64_t rflag = header.count("flags") ? resolveHeaderInt(header.at("flags")) : 0;
+        std::int64_t rflag = resolveHeaderInt(header.at("flags"));
         header["flags"] = (rflag & 0xff0fffffLL) + (static_cast<std::int64_t>(barnum) << 20);
         extra["barnum"] = barnum;
     }
@@ -1292,6 +1321,8 @@ void CuAsmParser::Impl::updateSymtab() {
                 CuAsmSymbol& symobj = *mSymbolDict.at(s);
                 symobj.value = mLabelDict.at(s)->offset;
                 ExprResult res = evalExpr(*symobj.size);
+                doAssert(res.value >= 0, "Symbol size must be non-negative for symbol \"" + s + "\": expr=" + *symobj.size +
+                                              " evaluated to " + std::to_string(res.value));
                 symobj.sizeval = static_cast<std::uint64_t>(res.value);
                 syment.st_size = *symobj.sizeval;
 
@@ -1398,8 +1429,8 @@ void CuAsmParser::Impl::layoutSections() {
             seg.header["filesz"] = filesz;
             seg.header["memsz"] = filesz;
         } else if (segType == "PT_LOAD") {
-            std::string startsection = seg.header.count("startsection") ? std::get<std::string>(seg.header.at("startsection")) : "";
-            std::string endsection = seg.header.count("endsection") ? std::get<std::string>(seg.header.at("endsection")) : "";
+            std::string startsection = std::get<std::string>(seg.header.at("startsection"));
+            std::string endsection = std::get<std::string>(seg.header.at("endsection"));
             if (!startsection.empty() && !endsection.empty()) {
                 const Edge& e0 = shEdges.at(startsection);
                 const Edge& e1 = shEdges.at(endsection);
@@ -1456,7 +1487,7 @@ void CuAsmParser::Impl::dirSectionflags(const std::vector<std::string>& args) {
 
 void CuAsmParser::Impl::dirSectionentsize(const std::vector<std::string>& args) {
     assertArgc(".sectionentsize", args, 1, false);
-    mCurrSection->entsize = static_cast<std::uint64_t>(std::stoll(args[0]));
+    mCurrSection->entsize = static_cast<std::uint64_t>(parsePyInt(args[0]));
 }
 
 void CuAsmParser::Impl::dirSectioninfo(const std::vector<std::string>& args) {
@@ -1480,7 +1511,7 @@ void CuAsmParser::Impl::dirAlign(const std::vector<std::string>& args) {
     int align = 0;
     bool ok = true;
     try {
-        align = std::stoi(args[0]);
+        align = static_cast<int>(parsePyInt(args[0]));
     } catch (...) {
         ok = false;
     }
@@ -1546,7 +1577,7 @@ void CuAsmParser::Impl::dirZero(const std::vector<std::string>& args) {
     bool ok = true;
     int size = 0;
     try {
-        size = std::stoi(args[0]);
+        size = static_cast<int>(parsePyInt(args[0]));
         if (size > 0) {
             emitBytes(std::string(static_cast<std::size_t>(size), '\0'));
         }
@@ -1568,7 +1599,7 @@ void CuAsmParser::Impl::dirElfheader(const std::string& attrname, const std::vec
     mCuAsmFile.fileHeader[attrname] = cvtValue(args[0]);
 
     if (attrname == "flags") {
-        std::int64_t flags = std::stoll(args[0], nullptr, 16);
+        std::int64_t flags = parsePyInt(args[0], 16);
         int smversion = static_cast<int>(flags & 0xff);
         mArch = std::make_unique<CuSMVersion>(smversion);
 
@@ -1828,7 +1859,7 @@ void CuAsmParser::Impl::emitTypedBytes(const std::string& dtype, const std::vect
 
     for (const auto& arg : args) {
         if (arg.rfind("0x", 0) == 0) {
-            std::uint64_t argv = std::stoull(arg, nullptr, 16);
+            std::uint64_t argv = parsePyUInt(arg, 16);
             try {
                 emitBytes(packUnsignedLE(argv, dsize));
             } catch (const std::overflow_error&) {

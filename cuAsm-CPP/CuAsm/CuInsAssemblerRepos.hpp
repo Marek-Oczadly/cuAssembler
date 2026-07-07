@@ -11,6 +11,7 @@
 #include "CuInsFeeder.hpp"
 #include "CuInsParser.hpp"
 #include "CuSMVersion.hpp"
+#include "utils/OrderedMap.hpp"
 
 namespace CuAsm {
 
@@ -23,10 +24,10 @@ namespace CuAsm {
  **/
 class CuInsAssemblerRepos {
 public:
-    /// Underlying instruction-assembler dict, mirroring m_InsAsmDict. std::map (rather than an
-    /// insertion-ordered dict) is used, consistent with the rest of this rewrite (e.g.
-    /// CuInsAssembler.m_ErrRecords); this only affects iteration/save2file order, not behavior.
-    using InsAsmDict = std::map<std::string, CuInsAssembler>;
+    /// Underlying instruction-assembler dict, mirroring m_InsAsmDict. An insertion-ordered map is
+    /// used (rather than std::map) so iteration/save2file order matches python's insertion-ordered
+    /// dict byte-for-byte.
+    using InsAsmDict = OrderedMap<std::string, CuInsAssembler>;
 
     /**
      * @brief Constructs a repos, either empty (optionally for a given arch) or loaded from a
