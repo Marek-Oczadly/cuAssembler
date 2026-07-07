@@ -73,7 +73,7 @@ public:
      * @param hasStdout Whether stdout logging is enabled at all.
      */
     static void initLogger(const std::string& logFile = "",
-                            int fileLevel = static_cast<int>(LogLevel::Info),
+                            int fileLevel = static_cast<int>(LogLevel::Debug),
                             int stdoutLevel = static_cast<int>(LogLevel::Procedure),
                             const std::string& name = "cuasm",
                             std::size_t fileMaxBytes = std::size_t(1) << 30,

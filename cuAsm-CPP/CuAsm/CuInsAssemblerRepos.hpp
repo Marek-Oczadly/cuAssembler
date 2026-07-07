@@ -104,6 +104,12 @@ public:
     /** @brief Const overload of operator[]. */
     const CuInsAssembler& operator[](const std::string& key) const;
 
+    /** @brief Inserts or overwrites the assembler for an instruction key, mirroring __setitem__. */
+    void set(const std::string& key, CuInsAssembler value);
+
+    /** @brief Removes an instruction key, mirroring __delitem__. Throws std::out_of_range if absent. */
+    void erase(const std::string& key);
+
     /** @brief Whether an instruction key is present, mirroring __contains__. */
     bool contains(const std::string& key) const;
 

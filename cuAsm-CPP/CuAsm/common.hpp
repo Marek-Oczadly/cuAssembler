@@ -11,6 +11,8 @@
 #include <utility>
 #include <vector>
 
+#include "utils/BigNum.hpp"
+
 namespace CuAsm {
 
 /**
@@ -68,7 +70,7 @@ std::string getTempFileName(const std::string& name = "", const std::string& pre
  * @param sp Separator inserted between groups.
  * @return The formatted binary string.
  **/
-std::string binstr(std::uint64_t v, int bitlen = 128, int width = 4, const std::string& sp = " ");
+std::string binstr(const BigInt& v, int bitlen = 128, int width = 4, const std::string& sp = " ");
 
 /**
  * @brief Formats an integer as a space-grouped hex string, mirroring CuAsm.common.hexstr.
@@ -78,7 +80,7 @@ std::string binstr(std::uint64_t v, int bitlen = 128, int width = 4, const std::
  * @param sp Separator inserted between groups.
  * @return The formatted hex string.
  **/
-std::string hexstr(std::uint64_t v, int bitlen = 128, int width = 4, const std::string& sp = " ");
+std::string hexstr(const BigInt& v, int bitlen = 128, int width = 4, const std::string& sp = " ");
 
 /**
  * @brief Pads a position up to the next multiple of an alignment, mirroring CuAsm.common.alignTo.

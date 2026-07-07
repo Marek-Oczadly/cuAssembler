@@ -395,6 +395,11 @@ std::string CuInsFeeder::formatCtrlCodeString(std::uint32_t ccode, bool phantomM
 }
 
 std::optional<CuInsRecord> CuInsFeeder::next() {
+    if (!m_IterationStarted) {
+        restart();
+        m_IterationStarted = true;
+    }
+
     while (true) {
         if (m_PendingIdx < m_PendingRecords.size()) {
             return m_PendingRecords[m_PendingIdx++];
@@ -404,6 +409,7 @@ std::optional<CuInsRecord> CuInsFeeder::next() {
 
         const std::optional<ParsedLine> pl = nextParseLine();
         if (!pl.has_value()) {
+            m_IterationStarted = false;
             return std::nullopt;
         }
 
@@ -585,6 +591,7 @@ void CuInsFeeder::restart() {
     m_DoFeed = false;
     m_PendingRecords.clear();
     m_PendingIdx = 0;
+    m_IterationStarted = true;
 }
 
 bool CuInsFeeder::close() {

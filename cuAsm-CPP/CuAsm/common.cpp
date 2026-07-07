@@ -193,13 +193,13 @@ std::string getTempFileName(const std::string& name, const std::string& prefix, 
     }
 }
 
-std::string binstr(std::uint64_t v, int bitlen, int width, const std::string& sp) {
+std::string binstr(const BigInt& v, int bitlen, int width, const std::string& sp) {
     std::string bv;
     if (v == 0) {
         bv = "0";
     } else {
-        for (std::uint64_t x = v; x > 0; x >>= 1) {
-            bv += static_cast<char>('0' + (x & 1));
+        for (BigInt x = v; x > 0; x >>= 1) {
+            bv += static_cast<char>('0' + static_cast<int>(x & 1));
         }
         std::reverse(bv.begin(), bv.end());
     }
@@ -218,7 +218,7 @@ std::string binstr(std::uint64_t v, int bitlen, int width, const std::string& sp
     return out;
 }
 
-std::string hexstr(std::uint64_t v, int bitlen, int width, const std::string& sp) {
+std::string hexstr(const BigInt& v, int bitlen, int width, const std::string& sp) {
     std::ostringstream hexOs;
     hexOs << std::hex << v;
     std::string hv = hexOs.str();

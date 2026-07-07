@@ -1065,9 +1065,11 @@ void CuAsmParser::Impl::parseKernels() {
             section->updateResourceInfo();
             std::string kname = secname.substr(6);
             auto symidx = getSymbolIdx(kname);
-            if (symidx) {
-                regnumdict[*symidx] = section->getRegNum();
-            }
+            // Mirrors python's `regnumdict[symidx] = ...` where symidx is None for an unresolved
+            // symbol: inserted under a null key (here -1, which can never be a real symtab index)
+            // rather than dropped, so a later unresolved kernel overwrites an earlier one exactly
+            // as a python dict would.
+            regnumdict[symidx.value_or(-1)] = section->getRegNum();
         }
     }
 

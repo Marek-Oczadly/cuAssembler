@@ -99,7 +99,10 @@ public:
 
     /**
      * @brief Retrieves the next (addr, code, asm, ctrl) instruction record, honoring the arch and
-     *        instruction filters, mirroring the original's __iter__ generator.
+     *        instruction filters, mirroring the original's __iter__ generator. Like __iter__
+     *        calling restart() at the start of every fresh `for rec in feeder` loop, this
+     *        auto-restarts the feeder when called for the first time or right after a previous
+     *        iteration ran to exhaustion, so the feeder can simply be reused for another pass.
      * @return The next record, or std::nullopt once the feeder is exhausted.
      **/
     std::optional<CuInsRecord> next();
@@ -205,6 +208,12 @@ private:
     bool m_DoFeed = false;
     std::vector<CuInsRecord> m_PendingRecords;
     std::size_t m_PendingIdx = 0;
+
+    // Whether a next()-driven iteration is currently in progress. Mirrors __iter__ calling
+    // restart() at the start of every fresh `for rec in feeder` loop: next() auto-restarts
+    // whenever it's called while this is false (construction, or after a prior iteration ran
+    // to exhaustion), so reusing the feeder doesn't silently yield nothing.
+    bool m_IterationStarted = false;
 };
 
 } // namespace CuAsm

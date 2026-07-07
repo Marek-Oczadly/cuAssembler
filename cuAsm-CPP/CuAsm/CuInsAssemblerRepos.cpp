@@ -601,6 +601,16 @@ const CuInsAssembler& CuInsAssemblerRepos::operator[](const std::string& key) co
     return m_InsAsmDict.at(key);
 }
 
+void CuInsAssemblerRepos::set(const std::string& key, CuInsAssembler value) {
+    m_InsAsmDict.insert_or_assign(key, std::move(value));
+}
+
+void CuInsAssemblerRepos::erase(const std::string& key) {
+    if (m_InsAsmDict.erase(key) == 0) {
+        throw std::out_of_range(key);
+    }
+}
+
 bool CuInsAssemblerRepos::contains(const std::string& key) const {
     return m_InsAsmDict.find(key) != m_InsAsmDict.end();
 }
