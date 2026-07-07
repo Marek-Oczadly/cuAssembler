@@ -127,8 +127,8 @@ void build(Graph& g, std::map<std::string, Vertex>& nameToVertex, const std::str
 Graph getGraph(std::map<std::string, Vertex>& nameToVertex) {
     Graph g;
     // getOrAddVertex(g, nameToVertex, ROOT_NODE);
-    // build(g, nameToVertex, R"(G:\Temp\CubinSample)");
-    // build(g, nameToVertex, R"(G:\Temp\CubinFull)");
+    // build(g, nameToVertex, std::string(CUASM_TESTDATA_DIR) + "/CubinSample");
+    // build(g, nameToVertex, std::string(CUASM_TESTDATA_DIR) + "/CubinFull");
 
     return g;
 }

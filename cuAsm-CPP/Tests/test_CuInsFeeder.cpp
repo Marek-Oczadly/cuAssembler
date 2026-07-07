@@ -11,7 +11,7 @@
  *        original test_sm61().
  **/
 void test_sm61() {
-    std::string fname = R"(G:\Work\CuAssembler\TestData\CuTest\cudatest.sm_61.sass)";
+    std::string fname = std::string(CUASM_TESTDATA_DIR) + "/CuTest/cudatest.sm_61.sass";
     CuAsm::CuInsFeeder feeder(fname, "sm_61");
 
     while (auto rec = feeder.next()) {
@@ -29,7 +29,7 @@ void test_sm61() {
  **/
 void test_sm75() {
     int cnt = 0;
-    std::string fname = R"(G:\Work\CuAssembler\TestData\CuTest\cudatest.sm_75.sass)";
+    std::string fname = std::string(CUASM_TESTDATA_DIR) + "/CuTest/cudatest.sm_75.sass";
     CuAsm::CuInsFeeder feeder(fname, "sm_75");
 
     CuAsm::CuInsParser cip("sm_75");

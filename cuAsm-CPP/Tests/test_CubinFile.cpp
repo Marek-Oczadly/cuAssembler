@@ -42,7 +42,7 @@ void cubin2cuasm(const std::string& binname) {
  * @return 0 on success.
  **/
 int main() {
-    const std::string fdir = R"(G:\Work\CuAssembler\TestData\CuTest)";
+    const std::string fdir = std::string(CUASM_TESTDATA_DIR) + "/CuTest";
 
     std::error_code ec;
     for (const auto& entry : fs::directory_iterator(fdir, ec)) {

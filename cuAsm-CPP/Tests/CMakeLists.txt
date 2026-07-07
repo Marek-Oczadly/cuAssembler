@@ -1,12 +1,14 @@
 enable_testing()
 
+# Resolved at configure time, so it always points at TestData/ under wherever
+# this repo happens to be checked out, instead of the original scripts'
+# hardcoded dev-machine paths (G:\Repos\..., G:\Work\...).
+add_compile_definitions(CUASM_TESTDATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../TestData")
+
 add_executable(test_CuAsmParser test_CuAsmParser.cpp)
 target_link_libraries(test_CuAsmParser PRIVATE CuAsm)
 add_test(NAME test_CuAsmParser COMMAND test_CuAsmParser)
 
-# The remaining Tests/*.cpp are still empty placeholder files (no test bodies
-# yet). Targets are commented out until each gets an implementation; add them
-# back (and an add_test() call) as they're filled in.
 add_executable(test_CuInsAsmRepos test_CuInsAsmRepos.cpp)
 target_link_libraries(test_CuInsAsmRepos PRIVATE CuAsm)
 add_test(NAME test_CuInsAsmRepos COMMAND test_CuInsAsmRepos)

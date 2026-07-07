@@ -8,8 +8,8 @@
  * @return 0 on success.
  **/
 int main() {
-    // std::string fprefix = "G:\\Work\\CuAssembler\\TestData\\CuTest\\cudatest.7.sm_75";
-    std::string fprefix = "G:\\Work\\CuAssembler\\TestData\\CuTest\\cudatest.6.sm_61";
+    // std::string fprefix = std::string(CUASM_TESTDATA_DIR) + "/CuTest/cudatest.7.sm_75";
+    std::string fprefix = std::string(CUASM_TESTDATA_DIR) + "/CuTest/cudatest.6.sm_61";
 
     std::string fname = fprefix + ".cuasm";
     std::string bname = fprefix + ".cubin";

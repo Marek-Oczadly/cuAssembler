@@ -62,9 +62,9 @@ void verifyReposFromFile(const std::string& sassname, const std::string& reposfi
  * @return 0 on success.
  **/
 int main() {
-    std::string sassname = R"(G:\Repos\Tests\Programs\cudatest.sm_86.sass)";
-    // std::string sassname = R"(G:\Temp\cudnn64_7.sm_50.sass)";
-    std::string reposfile = R"(G:\Repos\CuInsAsmRepos.sm_86.txt)";
+    std::string sassname = std::string(CUASM_TESTDATA_DIR) + "/CuTest/cudatest.sm_86.sass";
+    // std::string sassname = std::string(CUASM_TESTDATA_DIR) + "/CuTest/cudnn64_7.sm_50.sass";
+    std::string reposfile = std::string(CUASM_TESTDATA_DIR) + "/CuTest/CuInsAsmRepos.sm_86.txt";
 
     std::string arch = "sm_86";
 

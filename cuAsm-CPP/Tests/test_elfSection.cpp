@@ -75,7 +75,7 @@ void bytes2text(const std::string& bs, const std::string& label = "") {
  * @return 0 on success.
  **/
 int main() {
-    std::string binname = R"(G:\Repos\Tests\Programs\cudatest.7.sm_75.cubin)";
+    std::string binname = std::string(CUASM_TESTDATA_DIR) + "/CuTest/cudatest.7.sm_75.cubin";
 
     ELFIO::elfio ef;
     if (!ef.load(binname)) {

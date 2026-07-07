@@ -168,7 +168,7 @@ std::string toHex(const std::vector<std::uint8_t>& val) {
  * @return 0 on success.
  **/
 int main() {
-    std::string fdir = R"(G:\Repos\Tests\Programs)";
+    std::string fdir = std::string(CUASM_TESTDATA_DIR) + "/CuTest";
 
     std::error_code ec;
     for (const auto& entry : fs::directory_iterator(fdir, ec)) {

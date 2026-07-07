@@ -47,8 +47,8 @@ void doExtract(const std::string& fname, const std::string& insfilter = "", cons
  * @return 0 on success.
  **/
 int main() {
-    std::string sassname1 = R"(G:\Temp\cudnn64_7.sm_50.sass)";
-    // std::string sassname2 = R"(G:\Temp\cudnn64_7.sass)";
+    std::string sassname1 = std::string(CUASM_TESTDATA_DIR) + "/CuTest/cudnn64_7.sm_50.sass";
+    // std::string sassname2 = std::string(CUASM_TESTDATA_DIR) + "/CuTest/cudnn64_7.sass";
 
     // initialize a feeder with sass
     doExtract(sassname1, R"(FADD.*0\.5)", "sm_50", 10);
