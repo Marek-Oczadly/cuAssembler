@@ -88,12 +88,17 @@ std::string replaceAll(const std::string& s, const std::string& from, const std:
     return out;
 }
 
-/** @brief Parses a (possibly '-'-prefixed) "0x..." hex literal to a signed integer, mirroring python's int(s, 16). */
+/** @brief Parses a (possibly '-'-prefixed) "0x..." hex literal to a signed integer, mirroring python's
+ *         int(s, 16). Parses the magnitude as unsigned 64-bit so literals with the top bit set (e.g.
+ *         0xffffffffffffffff), which python's unbounded int handles fine, don't throw std::out_of_range
+ *         the way std::stoll (signed, LLONG_MAX-bounded) would; the bit pattern is then reinterpreted as
+ *         signed, and negation for a leading '-' is done via unsigned wraparound to avoid signed overflow. */
 std::int64_t parseHexSigned(const std::string& s) {
     const bool neg = !s.empty() && s[0] == '-';
     const std::string mag = neg ? s.substr(1) : s;
-    const long long v = std::stoll(mag, nullptr, 16);
-    return neg ? -v : v;
+    const std::uint64_t v = std::stoull(mag, nullptr, 16);
+    const std::uint64_t bits = neg ? (~v + 1) : v;
+    return static_cast<std::int64_t>(bits);
 }
 
 /** @brief python repr() of a string list, e.g. "['0_MOV']", used by dumpInfo. */
@@ -363,7 +368,7 @@ CuInsParser& CuInsParser::getStaticParser(const std::string& arch) {
 
 std::tuple<std::string, std::vector<std::int64_t>, std::vector<std::string>> CuInsParser::parse(const std::string& s,
                                                                                                    std::uint64_t addr,
-                                                                                                   std::uint64_t code) {
+                                                                                                   const BigInt& code) {
     reset();
     m_InsString = strip(s);
     m_CTrString = constTr(m_InsString);
@@ -693,8 +698,14 @@ CuInsParser::OperandParse CuInsParser::parseAddress(const std::string& s) {
 
 void CuInsParser::specialTreatment() {
     if (m_InsOp == "PLOP3" || m_InsOp == "UPLOP3") {
-        const std::int64_t v = m_InsVals[m_InsVals.size() - 2];
-        m_InsVals[m_InsVals.size() - 2] = (v & 7) + ((v & 0xf8) << 5);
+        // immLut for PLOP3 is encoded with separating 5+3 bits, e.g. 0x2a = 0b00101010 => 00101 xxxxx 010
+        // (LOP3 seems fine). TODO: locate the immLUT adaptively?
+        if (m_InsVals.size() < 2) {
+            throw std::out_of_range("m_InsVals index out of range in specialTreatment (" + m_InsOp + ")");
+        }
+        const std::size_t idx = m_InsVals.size() - 2;
+        const std::int64_t v = m_InsVals[idx];
+        m_InsVals[idx] = (v & 7) + ((v & 0xf8) << 5);
     } else if (cvtOpcodes().count(m_InsOp) > 0) {
         if (m_InsOpFull.find("64") != std::string::npos) {
             m_InsModifier.push_back("0_CVT64");
@@ -773,7 +784,7 @@ void CuInsParser::dumpInfo() const {
     std::cout << "  CTrString : " << m_CTrString << std::endl;
     std::cout << "  InsAddr   : 0x" << std::hex << m_InsAddr << std::dec << std::endl;
     std::cout << "  InsPred   : " << m_InsPredStr << " (0x" << std::hex << m_InsPredVal << std::dec << ")" << std::endl;
-    std::cout << "  InsCode   : " << m_Arch.formatCode(BigInt(m_InsCode)) << std::endl;
+    std::cout << "  InsCode   : " << m_Arch.formatCode(m_InsCode) << std::endl;
     std::cout << "  InsOp     : " << m_InsOp << std::endl;
     std::cout << "  InsOpFull : " << m_InsOpFull << std::endl;
     std::cout << "  InsKey    : " << m_InsKey << std::endl;

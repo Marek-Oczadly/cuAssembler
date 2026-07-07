@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "CuSMVersion.hpp"
+#include "utils/BigNum.hpp"
 
 namespace CuAsm {
 
@@ -43,11 +44,12 @@ public:
      * @brief Parses an instruction asm string into its key, operand values, and modifiers.
      * @param s Instruction asm string to parse.
      * @param addr Address of the instruction, needed by branch-type instructions.
-     * @param code Instruction code, recorded for later inspection via dumpInfo().
+     * @param code Instruction code, recorded for later inspection via dumpInfo(). Up to 128 bits
+     *        wide on sm_7x/8x, hence BigInt rather than a fixed-width integer.
      * @return Tuple of (insKey, insVals, insModifiers).
      **/
     std::tuple<std::string, std::vector<std::int64_t>, std::vector<std::string>>
-    parse(const std::string& s, std::uint64_t addr = 0, std::uint64_t code = 0);
+    parse(const std::string& s, std::uint64_t addr = 0, const BigInt& code = BigInt(0));
 
     /**
      * @brief Prints the parser's internal state for the most recently parsed instruction to stdout.
@@ -62,7 +64,7 @@ public:
         std::uint64_t insAddr = 0;
         std::string insPredStr;
         std::int64_t insPredVal = 0;
-        std::uint64_t insCode = 0;
+        BigInt insCode = 0;
         std::string insOp;
         std::string insOpFull;
         std::string insKey;
@@ -116,7 +118,7 @@ public:
     std::uint64_t m_InsAddr = 0;
     std::string m_InsString;
     std::string m_CTrString;
-    std::uint64_t m_InsCode = 0;
+    BigInt m_InsCode = 0;
 
     std::string m_InsKey;
     std::string m_InsOp;

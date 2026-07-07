@@ -1513,7 +1513,9 @@ void CuAsmParser::Impl::dirZero(const std::vector<std::string>& args) {
     int size = 0;
     try {
         size = std::stoi(args[0]);
-        emitBytes(std::string(static_cast<std::size_t>(size), '\0'));
+        if (size > 0) {
+            emitBytes(std::string(static_cast<std::size_t>(size), '\0'));
+        }
     } catch (...) {
         ok = false;
     }
@@ -1730,14 +1732,37 @@ std::string CuAsmParser::Impl::evalInstructionFixup(CuAsmSection& section, std::
     return s;
 }
 
+namespace {
+
+/** @brief Packs an unsigned magnitude into `size` little-endian bytes, mirroring python's
+ *         int.to_bytes(value, size, 'little') (signed=False default), which raises OverflowError
+ *         if `value` doesn't fit unsigned in `size` bytes.
+ * @param value Magnitude to pack.
+ * @param size Number of bytes to pack into.
+ * @return The packed little-endian bytes.
+ **/
+std::string packUnsignedLE(std::uint64_t value, int size) {
+    if (size < 8 && value >= (std::uint64_t{1} << (8 * size))) {
+        throw std::overflow_error("int too big to convert");
+    }
+    std::string bytes(static_cast<std::size_t>(size), '\0');
+    for (int i = 0; i < size; ++i) {
+        bytes[static_cast<std::size_t>(i)] = static_cast<char>((value >> (8 * i)) & 0xff);
+    }
+    return bytes;
+}
+
+} // namespace
+
 void CuAsmParser::Impl::updateSectionForFixup(CuAsmFixup& fixup) {
     static const std::map<std::string, int> dtypeSize = {{"byte", 1}, {"short", 2}, {"word", 4}, {"dword", 8}};
     int blen = dtypeSize.at(fixup.dtype);
-    std::uint64_t v = static_cast<std::uint64_t>(*fixup.value);
-    std::string bs(static_cast<std::size_t>(blen), '\0');
-    for (int i = 0; i < blen; ++i) {
-        bs[static_cast<std::size_t>(i)] = static_cast<char>((v >> (8 * i)) & 0xff);
+    std::int64_t value = *fixup.value;
+    if (value < 0) {
+        throw std::overflow_error("can't convert negative int to unsigned");
     }
+    std::uint64_t v = static_cast<std::uint64_t>(value);
+    std::string bs = packUnsignedLE(v, blen);
     fixup.section->updateForFixup(fixup.offset, bs);
 
     CuAsmLogger::logSubroutine("Eval fixup \"" + fixup.expr + "\" @line" + std::to_string(fixup.lineNo) + " to 0x" +
@@ -1770,11 +1795,11 @@ void CuAsmParser::Impl::emitTypedBytes(const std::string& dtype, const std::vect
     for (const auto& arg : args) {
         if (arg.rfind("0x", 0) == 0) {
             std::uint64_t argv = std::stoull(arg, nullptr, 16);
-            std::string bytes(static_cast<std::size_t>(dsize), '\0');
-            for (int i = 0; i < dsize; ++i) {
-                bytes[static_cast<std::size_t>(i)] = static_cast<char>((argv >> (8 * i)) & 0xff);
+            try {
+                emitBytes(packUnsignedLE(argv, dsize));
+            } catch (const std::overflow_error&) {
+                doAssert(false, "Value " + arg + " does not fit in ." + dtype + "!");
             }
-            emitBytes(bytes);
         } else {
             auto fixup = std::make_unique<CuAsmFixup>(mCurrSection, tellLocal(), arg, dtype, mLineNo);
             mFixupList.push_back(std::move(fixup));

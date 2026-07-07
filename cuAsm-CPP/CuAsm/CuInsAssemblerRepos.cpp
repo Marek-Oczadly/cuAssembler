@@ -715,7 +715,7 @@ int CuInsAssemblerRepos::updateFromGenerator(const std::function<std::optional<I
 
         while (const auto rec = next()) {
             ++cnt;
-            const auto [insKey, insValsSigned, insModi] = m_InsParser->parse(rec->asmText, rec->addr, rec->code.convert_to<std::uint64_t>());
+            const auto [insKey, insValsSigned, insModi] = m_InsParser->parse(rec->asmText, rec->addr, rec->code);
             const InsVals insVals(insValsSigned.begin(), insValsSigned.end());
 
             auto it = dict.find(insKey);
