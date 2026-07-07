@@ -126,13 +126,36 @@ bool matchAtStart(const std::string& s, const std::regex& re, std::smatch& m) {
 }
 
 /**
+ * @brief Parses a non-negative-or-signed integer literal ("0x..." hex or decimal), mirroring
+ *        python's eval(s) for the literal strings matched by this parser's int-literal regexes.
+ *        Python 3 rejects a decimal literal with a leading zero followed by another digit (e.g.
+ *        "0123") as a SyntaxError; unlike std::stoll(s, nullptr, 0), which would silently
+ *        reinterpret such strings as octal, this throws instead.
+ */
+std::int64_t parsePyIntLiteral(const std::string& s) {
+    const bool neg = !s.empty() && s.front() == '-';
+    const std::string digits = neg ? s.substr(1) : s;
+
+    std::int64_t value;
+    if (digits.size() >= 2 && digits[0] == '0' && (digits[1] == 'x' || digits[1] == 'X')) {
+        value = static_cast<std::int64_t>(std::stoll(digits, nullptr, 16));
+    } else {
+        if (digits.size() > 1 && digits.front() == '0' && digits.find_first_not_of('0') != std::string::npos) {
+            throw std::runtime_error("invalid decimal literal (leading zeros not permitted): " + s);
+        }
+        value = static_cast<std::int64_t>(std::stoll(digits, nullptr, 10));
+    }
+    return neg ? -value : value;
+}
+
+/**
  * @brief Converts a header attribute's raw text into an int or a (possibly symbolic) string,
  *        mirroring CuAsmParser.__cvtValue.
  */
 HeaderValue cvtValue(const std::string& s) {
     static const std::regex intval(R"(^(0x[a-fA-F0-9]+|[0-9]+))");
     if (std::regex_search(s, intval)) {
-        return static_cast<std::int64_t>(std::stoll(s, nullptr, 0));
+        return parsePyIntLiteral(s);
     }
     if (s.size() >= 2 && s.front() == '"' && s.back() == '"') {
         return s.substr(1, s.size() - 2);
@@ -165,7 +188,7 @@ std::int64_t resolveHeaderInt(const HeaderValue& v) {
     const std::string& s = std::get<std::string>(v);
     static const std::regex numeric(R"(^-?(0x[a-fA-F0-9]+|[0-9]+)$)");
     if (std::regex_match(s, numeric)) {
-        return static_cast<std::int64_t>(std::stoll(s, nullptr, 0));
+        return parsePyIntLiteral(s);
     }
     return resolveNamedConstant(s);
 }
@@ -1617,7 +1640,7 @@ std::pair<std::int64_t, bool> CuAsmParser::Impl::evalVar(const std::string& var)
 
     static const std::regex intval(R"(^(0x[a-fA-F0-9]+|[0-9]+))");
     if (std::regex_search(var, intval)) {
-        return {static_cast<std::int64_t>(std::stoll(var, nullptr, 0)), isSym};
+        return {parsePyIntLiteral(var), isSym};
     }
 
     static const std::string srelSuffix = "@srel";

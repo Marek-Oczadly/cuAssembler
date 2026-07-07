@@ -60,7 +60,9 @@ public:
      *        CuInsFeeder.trans.
      * @param outFileName Path of the output file to write.
      * @param codeOnlyLineMode "keep" to retain code-only lines (e.g. SM5x/6x control code lines) unchanged,
-     *        "none" (default) to strip them for a more compact output.
+     *        "none" (default) to strip them for a more compact output. Throws std::invalid_argument
+     *        for any other value, mirroring the original's undocumented-but-observable behavior of
+     *        eventually raising on an unrecognized mode.
      **/
     void trans(const std::string& outFileName, const std::string& codeOnlyLineMode = "none");
 
@@ -69,7 +71,9 @@ public:
      *        the result to an already-open output stream.
      * @param outStream Output stream to write the translated sass to.
      * @param codeOnlyLineMode "keep" to retain code-only lines (e.g. SM5x/6x control code lines) unchanged,
-     *        "none" (default) to strip them for a more compact output.
+     *        "none" (default) to strip them for a more compact output. Throws std::invalid_argument
+     *        for any other value, mirroring the original's undocumented-but-observable behavior of
+     *        eventually raising on an unrecognized mode.
      **/
     void trans(std::ostream& outStream, const std::string& codeOnlyLineMode = "none");
 

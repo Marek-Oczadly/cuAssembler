@@ -447,6 +447,10 @@ void CuInsFeeder::trans(const std::string& outFileName, const std::string& codeO
 }
 
 void CuInsFeeder::trans(std::ostream& outStream, const std::string& codeOnlyLineMode) {
+    if (codeOnlyLineMode != "keep" && codeOnlyLineMode != "none") {
+        throw std::invalid_argument("Unknown codeOnlyLineMode \"" + codeOnlyLineMode + "\"!");
+    }
+
     restart();
 
     struct BufferedLine {
