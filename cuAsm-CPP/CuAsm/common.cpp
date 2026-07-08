@@ -110,6 +110,21 @@ std::string checkOutput(const std::vector<std::string>& args, bool mergeStderr) 
         }
         cmd += quoteArg(args[i]);
     }
+
+#ifdef _WIN32
+    // _popen() launches this via "cmd /c <command>", and cmd.exe has a quirk: unless the command
+    // line contains *exactly* two quote characters, a leading quote makes it strip only the very
+    // first and very last quote character of the whole line, rather than parsing each argument's
+    // own quotes. Since every argument above is individually quoted, that strips the boundary
+    // between e.g. "nvdisasm" and its filename argument, corrupting the command (cmd.exe ends up
+    // trying to run a program literally named `nvdisasm" "path`). Wrapping the whole thing in one
+    // more pair of quotes makes cmd.exe's strip cancel out, so the per-argument quoting survives
+    // intact for the process it launches.
+    if (!cmd.empty() && cmd.front() == '"') {
+        cmd = "\"" + cmd + "\"";
+    }
+#endif
+
     if (mergeStderr) {
         cmd += " 2>&1";
     }

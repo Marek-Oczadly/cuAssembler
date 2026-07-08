@@ -8,3 +8,4 @@ TEST_FAIL_ANALYSIS.md
 TEST_OVERVIEW.md
 *.log
 .vs
+microbenchmarks
