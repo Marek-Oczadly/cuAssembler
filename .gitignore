@@ -9,3 +9,4 @@ TEST_OVERVIEW.md
 *.log
 .vs
 microbenchmarks
+.claude

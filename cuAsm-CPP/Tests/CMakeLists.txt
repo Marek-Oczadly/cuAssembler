@@ -28,3 +28,5 @@ add_test(NAME test_nvinfo COMMAND test_nvinfo)
 add_executable(test_relocation test_relocation.cpp)
 target_link_libraries(test_relocation PRIVATE CuAsm elfio::elfio)
 add_test(NAME test_relocation COMMAND test_relocation)
+
+add_subdirectory(CheckDisasm)
