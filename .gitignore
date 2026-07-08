@@ -1,14 +1,7 @@
 .vscode
-CLAUDE.md
-CuAssembler
 build
-cuAsm-CPP/build_msvc
-PORT_GAP_ANALYSIS.md
-TEST_FAIL_ANALYSIS.md
-TEST_OVERVIEW.md
 *.log
 .vs
-microbenchmarks
 .claude
-build.bat
-build_gen_probe
+cuAsm-CPP/TestData/CheckDisasm/**/*.cubin
+cuAsm-CPP/TestData/CheckDisasm/**/*.cuasm
