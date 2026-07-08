@@ -78,8 +78,9 @@ inline void removeQuiet(const std::string& path) {
  * @brief Runs the CheckDisasm round trip for one (kernel, architecture) pair: compiles the
  *        kernel's .cu fixture with nvcc, disassembles the resulting cubin with CubinFile,
  *        reassembles that disassembly with CuAsmParser, and checks that the reassembled cubin
- *        is byte-for-byte identical to nvcc's original. All intermediate files are removed
- *        before returning, whether the check passes or fails.
+ *        is byte-for-byte identical to nvcc's original. Any intermediate files left over from a
+ *        previous run are cleared before this run starts; the files produced by this run are
+ *        left in place afterward (pass or fail) for inspection, and get cleared on the next run.
  * @param kernelName Name of the kernel/subdirectory under TestData/CheckDisasm; also the base
  *        name of the .cu fixture and the entry-point symbol within it.
  * @param arch Target SM architecture, e.g. "sm_75".
@@ -91,6 +92,11 @@ inline bool runCheckDisasm(const std::string& kernelName, const std::string& arc
     const std::string origCubin = dir + "/" + kernelName + "." + arch + ".orig.cubin";
     const std::string cuasmFile = dir + "/" + kernelName + "." + arch + ".cuasm";
     const std::string newCubin = dir + "/" + kernelName + "." + arch + ".new.cubin";
+
+    // Clear any leftover output from a previous run before starting a fresh one.
+    removeQuiet(origCubin);
+    removeQuiet(cuasmFile);
+    removeQuiet(newCubin);
 
     bool passed = false;
     std::string failureReason;
@@ -120,10 +126,6 @@ inline bool runCheckDisasm(const std::string& kernelName, const std::string& arc
     if (!passed) {
         std::cerr << "[FAIL] CheckDisasm " << kernelName << " (" << arch << "): " << failureReason << "\n";
     }
-
-    removeQuiet(origCubin);
-    removeQuiet(cuasmFile);
-    removeQuiet(newCubin);
 
     return passed;
 }

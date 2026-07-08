@@ -10,3 +10,5 @@ TEST_OVERVIEW.md
 .vs
 microbenchmarks
 .claude
+build.bat
+build_gen_probe
