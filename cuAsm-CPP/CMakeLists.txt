@@ -6,6 +6,11 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Needed here (not just in Tests/CMakeLists.txt) so ctest run from the top of the build tree
+# discovers the tests: CTestTestfile.cmake is only generated at the root if enable_testing() is
+# called at or above that root, letting it recurse into the subdirectories that add_test().
+enable_testing()
+
 include(FetchContent)
 FetchContent_Declare(
     elfio
