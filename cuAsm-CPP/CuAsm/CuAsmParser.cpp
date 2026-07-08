@@ -201,6 +201,7 @@ std::int64_t resolveNamedConstant(const std::string& name) {
         {"SHT_REL", ELFIO::SHT_REL},         {"PT_LOAD", ELFIO::PT_LOAD},
         {"PT_PHDR", ELFIO::PT_PHDR},         {"ET_REL", ELFIO::ET_REL},
         {"ET_EXEC", ELFIO::ET_EXEC},         {"ET_DYN", ELFIO::ET_DYN},
+        {"EM_CUDA", 190},
     };
     auto it = table.find(name);
     if (it == table.end()) {
