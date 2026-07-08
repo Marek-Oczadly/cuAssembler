@@ -13,3 +13,10 @@ cmake -S cuAsm-CPP -B build -G "Visual Studio 17 2022" -A x64
 ```cmd
 msbuild build\cuAsmCPP.sln /p:Configuration=Release
 ```
+
+### Run Tests
+Following the build instructions above:
+```cmd
+cd build
+ctest -C Release --output-on-failure
+```
