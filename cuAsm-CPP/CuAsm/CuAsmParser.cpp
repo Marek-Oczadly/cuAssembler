@@ -1380,11 +1380,10 @@ void CuAsmParser::Impl::layoutSections() {
         }
     }
 
-    if (prevSec != nullptr && prevSec->name.rfind(".text", 0) == 0) {
-        auto [newFileOffset, newMemOffset] = updateSectionPadding(prevSec, fileOffset, memOffset, 128);
-        fileOffset = newFileOffset;
-        memOffset = newMemOffset;
-    }
+    // Unlike the mid-loop case above, a trailing .text section (i.e. nothing follows it but the
+    // section header table) has no successor section whose own alignment requirement it needs to
+    // satisfy, so it must not be force-padded to 128 bytes here — doing so adds spurious trailing
+    // NOP padding that nvcc's own cubins never contain (see TEST_FAIL_ANALYSIS.md Root Cause E).
 
     for (auto& [secname, secPtr] : mSectionDict) {
         if (secname.empty()) {
