@@ -874,6 +874,7 @@ struct CuAsmParser::Impl {
     // ---- parsing procedures ----
 
     void preScan();
+    bool labelPrecedesSyncOrBrk(std::size_t lineIdx);
     void gatherTextSectionSizeLabel();
     void parseKernels();
     void buildInternalTables();
@@ -1048,8 +1049,51 @@ void CuAsmParser::Impl::reset() {
     mPadSizeBeforeSecHeader = 0;
 }
 
+/**
+ * @brief Looks ahead from a Label line to decide whether it marks the address of a SYNC/BRK
+ *        reconvergence instruction (used as the `source_offset` half of an
+ *        EIATTR_INDIRECT_BRANCH_TARGETS record). Only such labels need the control-word-aware
+ *        offset instead of the leftover write cursor: a SYNC/BRK's own address must be its exact
+ *        physical instruction offset, since it identifies one specific instruction. By contrast,
+ *        a label marking a reconvergence *target* (where execution resumes) is conventionally
+ *        recorded by nvcc as the raw cursor value even when that lands on the control word
+ *        preceding the resumed instruction, so such labels must be left uncorrected. Blank and
+ *        Label lines in between are skipped (they don't advance mInsIndex); a dual-issue bundle's
+ *        opening `{` line continues the lookahead into its second (closing `}`) instruction, since
+ *        a bundle's SYNC/BRK is often the second slot.
+ * @param lineIdx Index into mLines of the Label line being scanned from.
+ * @return true if the label immediately precedes (or is immediately followed within the same
+ *         dual-issue bundle by) a SYNC or BRK instruction.
+ */
+bool CuAsmParser::Impl::labelPrecedesSyncOrBrk(std::size_t lineIdx) {
+    static const std::regex syncBrkPattern(R"(\b(SYNC|BRK)\b)");
+    int codeLinesSeen = 0;
+    for (std::size_t j = lineIdx + 1; j < mLines.size() && codeLinesSeen < 2; ++j) {
+        std::string nline = trim(CuAsmParser::stripComments(mLines[j]));
+        if (nline.empty()) {
+            continue;
+        }
+        LineType ltype = getLineType(nline);
+        if (ltype == LineType::Label) {
+            continue;
+        }
+        if (ltype != LineType::Code) {
+            return false;
+        }
+        ++codeLinesSeen;
+        if (std::regex_search(nline, syncBrkPattern)) {
+            return true;
+        }
+        if (nline.find('{') == std::string::npos) {
+            return false;
+        }
+    }
+    return false;
+}
+
 void CuAsmParser::Impl::preScan() {
-    for (const auto& rawLine : mLines) {
+    for (std::size_t lineIdx = 0; lineIdx < mLines.size(); ++lineIdx) {
+        const std::string& rawLine = mLines[lineIdx];
         std::string nline = trim(CuAsmParser::stripComments(rawLine));
         ++mLineNo;
 
@@ -1064,7 +1108,16 @@ void CuAsmParser::Impl::preScan() {
             std::smatch m;
             matchAtStart(nline, mLabelPattern, m);
             std::string rlabel = m[1].str();
-            std::uint64_t pos = tellLocal();
+            // A label marking a SYNC/BRK reconvergence instruction's own address must use that
+            // instruction's control-word-aware offset, not the leftover write cursor from the
+            // *previous* instruction: on sm_6x, an intervening 8-byte control word between the
+            // two would otherwise leave the label's recorded address 8 bytes short. Every other
+            // label (reconvergence *targets*, kernel entry symbols, ...) must keep the raw
+            // cursor, since nvcc's own convention records those as-is, even when that lands on
+            // the control word preceding the addressed instruction rather than the instruction
+            // itself.
+            std::uint64_t pos = (mInsIndex > 0 && labelPrecedesSyncOrBrk(lineIdx)) ? mArch->getInsOffsetFromIndex(mInsIndex)
+                                                                                    : tellLocal();
 
             std::string label = checkNVInfoOffsetLabels(mCurrSection, rlabel, pos);
 
