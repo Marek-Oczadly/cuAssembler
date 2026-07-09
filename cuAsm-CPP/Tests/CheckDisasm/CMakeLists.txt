@@ -18,6 +18,17 @@ set(CUASM_CHECKDISASM_KERNELS
     SequentialBarriers
     InlinePTX
     MatrixMultiply
+    DoublePrecisionArithmetic
+    HalfPrecisionArithmetic
+    TextureOps
+    ConstantMemory
+    Int64Arithmetic
+    ExtendedAtomicOps
+    WarpReduceOps
+    LocalMemorySpill
+    DevicePrintf
+    CacheHintOps
+    CooperativeGroups
 )
 
 set(CUASM_CHECKDISASM_ARCHS
