@@ -13,6 +13,11 @@ set(CUASM_CHECKDISASM_KERNELS
     Intrinsics
     LargeKernel
     AsyncCopyOps
+    DeviceFunctionCalls
+    SharedMemory
+    SequentialBarriers
+    InlinePTX
+    MatrixMultiply
 )
 
 set(CUASM_CHECKDISASM_ARCHS
