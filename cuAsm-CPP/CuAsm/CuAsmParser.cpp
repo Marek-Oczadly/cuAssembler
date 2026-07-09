@@ -1484,7 +1484,15 @@ void CuAsmParser::Impl::layoutSections() {
 
         std::uint64_t align = sec.addralign;
         if (prevSec != nullptr && prevSec->name.rfind(".text", 0) == 0) {
-            align = 128;
+            // A NOBITS section (e.g. .nv.shared.<kernel>) occupies no file bytes at all (see the
+            // `!isNobits` guard below), so forcing the preceding .text section to pad up to a
+            // 128-byte file offset here serves no purpose: nvcc's real cubins never do it, and
+            // it silently injects extra trailing NOP instructions into .text whenever the actual
+            // offset doesn't already happen to land on a 128-byte boundary.
+            bool nextIsNobits = sec.header.count("type") && isHeaderTypeNamed(sec.header.at("type"), "SHT_NOBITS");
+            if (!nextIsNobits) {
+                align = 128;
+            }
         }
         auto [newFileOffset, newMemOffset] = updateSectionPadding(prevSec, fileOffset, memOffset, align);
         fileOffset = newFileOffset;
