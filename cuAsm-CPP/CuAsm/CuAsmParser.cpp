@@ -1265,6 +1265,51 @@ void CuAsmParser::Impl::parseKernelText(CuAsmSection& section, int lineStart, in
     infoSec->setData(std::string(serialized.begin(), serialized.end()));
 }
 
+/**
+ * @brief Determines whether a byte offset within a `.debug_frame` section's already-built
+ *        content falls inside a CIE record rather than an FDE record, by walking the section
+ *        as a sequence of 64-bit-DWARF `.debug_frame` records: a 4-byte length escape
+ *        (`0xffffffff`) followed by an 8-byte length, then an 8-byte CIE_id/CIE_pointer field
+ *        that is all-ones for a CIE and a back-reference offset for an FDE.
+ * @param data Raw, fully-written `.debug_frame` section bytes.
+ * @param off Byte offset to classify.
+ * @return True if `off` falls inside a CIE record; false if it falls inside an FDE record or
+ *         couldn't be classified (offset outside any record, or a malformed/32-bit-DWARF
+ *         layout this walk doesn't recognize).
+ **/
+static bool isOffsetInsideDebugFrameCie(const std::string& data, std::uint64_t off) {
+    std::uint64_t pos = 0;
+    while (pos + 12 <= data.size()) {
+        std::uint32_t escape;
+        std::memcpy(&escape, data.data() + pos, sizeof(escape));
+
+        std::uint64_t length;
+        std::uint64_t recordStart;
+        if (escape == 0xffffffffu) {
+            std::memcpy(&length, data.data() + pos + 4, sizeof(length));
+            recordStart = pos + 12;
+        } else {
+            length = escape;
+            recordStart = pos + 4;
+        }
+        if (length == 0) {
+            break;
+        }
+
+        std::uint64_t recordEnd = recordStart + length;
+        if (off >= recordStart && off < recordEnd) {
+            if (recordStart + 8 > data.size()) {
+                return false;
+            }
+            std::uint64_t idField;
+            std::memcpy(&idField, data.data() + recordStart, sizeof(idField));
+            return idField == 0xffffffffffffffffULL;
+        }
+        pos = recordEnd;
+    }
+    return false;
+}
+
 void CuAsmParser::Impl::buildRelocationSections() {
     std::map<std::string, std::vector<CuAsmRelocation*>> relSecDict;
     std::vector<std::string> order;
@@ -1280,6 +1325,33 @@ void CuAsmParser::Impl::buildRelocationSections() {
     for (const auto& sname : order) {
         CuAsmSection* section = mSectionDict.at(sname).get();
         auto& rellist = relSecDict.at(sname);
+
+        // `.debug_frame` is special-cased: nvcc/nvlink don't emit these relocations in a
+        // plain reversed order. Empirically (cross-checked against orig cubins for every
+        // sm_60-sm_86 arch of a kernel with multiple weak-function FDEs/CIEs), the real
+        // order groups FDE-initial-location relocations before CIE-augmentation-pointer
+        // relocations, each group internally reversed. See TEST_FAIL_ANALYSIS.md, Root
+        // Cause I.
+        if (rellist.front()->section->name == ".debug_frame") {
+            const std::string& debugFrameData = rellist.front()->section->getData();
+            std::vector<CuAsmRelocation*> fdeGroup;
+            std::vector<CuAsmRelocation*> cieGroup;
+            for (auto* rel : rellist) {
+                if (isOffsetInsideDebugFrameCie(debugFrameData, rel->offset)) {
+                    cieGroup.push_back(rel);
+                } else {
+                    fdeGroup.push_back(rel);
+                }
+            }
+            for (auto it = fdeGroup.rbegin(); it != fdeGroup.rend(); ++it) {
+                section->emitBytes((*it)->buildEntry());
+            }
+            for (auto it = cieGroup.rbegin(); it != cieGroup.rend(); ++it) {
+                section->emitBytes((*it)->buildEntry());
+            }
+            continue;
+        }
+
         for (auto it = rellist.rbegin(); it != rellist.rend(); ++it) {
             section->emitBytes((*it)->buildEntry());
         }
@@ -1836,8 +1908,23 @@ std::string CuAsmParser::Impl::evalInstructionFixup(CuAsmSection& section, std::
 
         CuAsmLabel* clabel = mLabelDict.at(label).get();
         if (section.name == clabel->section->name) {
+            std::uint64_t targetAddr = clabel->offset;
+            // On sm_5x/6x, a label may be stored at its real, control-word-aware
+            // instruction address (see the SYNC/BRK case in preScan()), but a bare
+            // branch-target reference to a label sitting at the first instruction of a
+            // scheduling group must instead encode that group's own control-word
+            // address: landing there via a jump means the control word governing the
+            // group hasn't been read the way it would on straight-line fallthrough, so
+            // hardware always re-fetches starting at the control word itself, 8 bytes
+            // before the instruction the label names.
+            if (mArch->getMajor() <= 6) {
+                const int idx = mArch->getInsIndexFromOffset(targetAddr);
+                if (idx >= 0 && idx % 3 == 0) {
+                    targetAddr -= 8;
+                }
+            }
             std::ostringstream v;
-            v << "0x" << std::hex << clabel->offset;
+            v << "0x" << std::hex << targetAddr;
             return std::regex_replace(s, pInsLabel, v.str());
         }
 
