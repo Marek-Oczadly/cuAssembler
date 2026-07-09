@@ -217,4 +217,19 @@ bool hackCubinDesc(const std::string& fin, const std::string& fout, bool alwaysO
  **/
 bool fixCubinDesc(const std::string& fin, const std::string& fout);
 
+/**
+ * @brief Post-processes an already-assembled SM8x+ cubin in place, clearing the cache-policy desc
+ *        bit on instructions whose desc[URx] operand is really just that kernel's implicit-default
+ *        descriptor register rather than a genuinely explicit one. nvdisasm cannot distinguish the
+ *        two cases from disassembly text alone (see fixCubinDesc/hackCubinDesc's own caveat about
+ *        the default UR not always being shown), so CuAsmParser::saveAsCubin always encodes
+ *        DESC_BIT=1 for any desc[URx] syntax it parses; this corrects the common case afterward by
+ *        treating whichever UR is the strict majority of a kernel's desc[] operands as the default
+ *        and clearing DESC_BIT there, leaving any minority (genuinely explicit) UR alone.
+ * @param cubinPath Path of the cubin file to fix up in place.
+ * @return True if any bits were cleared (and the file rewritten); false if the cubin's SM version
+ *         predates Ampere or no kernel had a strict-majority default UR to demote.
+ **/
+bool demoteDefaultDescBits(const std::string& cubinPath);
+
 } // namespace CuAsm

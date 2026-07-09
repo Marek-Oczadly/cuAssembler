@@ -828,4 +828,86 @@ bool fixCubinDesc(const std::string& fin, const std::string& fout) {
     return true;
 }
 
+bool demoteDefaultDescBits(const std::string& cubinPath) {
+    std::string fbytes = readFileBytes(cubinPath);
+    if (fbytes.size() < sizeof(ELFIO::Elf64_Ehdr)) {
+        throw std::runtime_error("Cubin file " + cubinPath + " is too small to contain an ELF header!");
+    }
+
+    ELFIO::Elf64_Ehdr ehdr{};
+    std::memcpy(&ehdr, fbytes.data(), sizeof(ehdr));
+    const int smv = static_cast<int>(ehdr.e_flags & 0xff) / 10;
+    if (smv < 8) {
+        return false;
+    }
+
+    const std::map<std::string, TextSectionRange> secDict = collectTextSections(fbytes);
+
+    // Disassemble the cubin exactly as CuAsmParser produced it (no bit-forcing needed this time --
+    // every instruction that shows desc[URx] here already has DESC_BIT=1 for real).
+    const std::string sass = checkOutput({Config::NVDISASM_PATH, "-hex", "-c", cubinPath});
+
+    // Per kernel, collect (address, descriptor UR number) for every instruction that shows desc[].
+    static const std::regex kDescRe(R"(desc\[UR(\d+)\])");
+    std::map<std::string, std::vector<std::pair<std::uint64_t, int>>> descByFunc;
+    {
+        std::istringstream sassStream(sass);
+        CuInsFeeder feeder(sassStream);
+        while (const auto rec = feeder.next()) {
+            std::smatch m;
+            if (std::regex_search(rec->asmText, m, kDescRe)) {
+                descByFunc[feeder.CurrFuncName].emplace_back(rec->addr, std::stoi(m[1].str()));
+            }
+        }
+    }
+
+    // Within a kernel, an explicit desc[URx] that CuAsmParser encoded from cuasm source is
+    // frequently just a compiler-side artifact of always routing through the same "default"
+    // cache-policy UR pair -- nvdisasm has no way to tell that case apart from a genuinely
+    // explicit, kernel-specific descriptor at the point the .cuasm was written (README.md's
+    // "hcubin" section documents the same ambiguity for the disassembly direction). Empirically,
+    // the UR used for the implicit default is whichever one is the STRICT MAJORITY of desc[]
+    // hits in that kernel; treat that one as spurious and clear DESC_BIT for it, leaving any
+    // minority (genuinely explicit) UR references untouched. Skip kernels with no strict majority
+    // (e.g. an even split) rather than risk clearing a real explicit reference.
+    std::string outBytes = fbytes;
+    bool changed = false;
+    for (const auto& [kname, hits] : descByFunc) {
+        std::map<int, std::vector<std::uint64_t>> byUR;
+        for (const auto& [addr, ur] : hits) {
+            byUR[ur].push_back(addr);
+        }
+
+        int majorityUR = -1;
+        std::size_t majorityCount = 0;
+        for (const auto& [ur, addrs] : byUR) {
+            if (addrs.size() > majorityCount) {
+                majorityCount = addrs.size();
+                majorityUR = ur;
+            }
+        }
+        if (majorityUR < 0 || majorityCount * 2 <= hits.size()) {
+            continue; // no strict majority -- leave this kernel's desc bits as CuAsmParser encoded them
+        }
+
+        const TextSectionRange& range = secDict.at(".text." + kname);
+        for (const std::uint64_t addr : byUR.at(majorityUR)) {
+            const std::uint64_t offset = range.offset + addr + 8;
+            std::uint64_t q2;
+            std::memcpy(&q2, outBytes.data() + offset, sizeof(q2));
+            q2 &= ~DESC_BIT;
+            std::memcpy(outBytes.data() + offset, &q2, sizeof(q2));
+            changed = true;
+        }
+    }
+
+    if (changed) {
+        CuAsmLogger::logProcedure("Demoting default-UR desc bits in " + cubinPath + " ...");
+        std::ofstream foutStream(cubinPath, std::ios::binary);
+        foutStream.write(outBytes.data(), static_cast<std::streamsize>(outBytes.size()));
+    }
+
+    return changed;
+}
+
 } // namespace CuAsm

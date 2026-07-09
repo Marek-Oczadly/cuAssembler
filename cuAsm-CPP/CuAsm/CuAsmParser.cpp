@@ -27,6 +27,7 @@
 #include "CubinFile.hpp"
 #include "common.hpp"
 #include "config.hpp"
+#include "utils/CubinUtils.hpp"
 
 namespace CuAsm {
 
@@ -2017,6 +2018,11 @@ void CuAsmParser::Impl::saveAsCubin(const std::string& path) {
         disppos("Segment");
         std::string segBytes = segPtr->build();
         fout.write(segBytes.data(), static_cast<std::streamsize>(segBytes.size()));
+    }
+    fout.close();
+
+    if (mArch && mArch->needsDescHack()) {
+        demoteDefaultDescBits(path);
     }
 }
 
