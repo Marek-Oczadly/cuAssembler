@@ -9,6 +9,10 @@ set(CUASM_CHECKDISASM_KERNELS
     MemoryOps
     ControlFlow
     AtomicOps
+    TensorCoreOps
+    Intrinsics
+    LargeKernel
+    AsyncCopyOps
 )
 
 set(CUASM_CHECKDISASM_ARCHS

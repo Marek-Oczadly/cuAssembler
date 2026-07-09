@@ -75,6 +75,16 @@ inline void removeQuiet(const std::string& path) {
 }
 
 /**
+ * @brief Extracts the numeric SM version from an architecture string, e.g. "sm_75" -> 75.
+ * @param arch Target SM architecture string, e.g. "sm_75".
+ * @return The architecture's numeric SM version.
+ **/
+inline int smArchNumber(const std::string& arch) {
+    const std::size_t underscore = arch.find('_');
+    return std::stoi(arch.substr(underscore + 1));
+}
+
+/**
  * @brief Runs the CheckDisasm round trip for one (kernel, architecture) pair: compiles the
  *        kernel's .cu fixture with nvcc, disassembles the resulting cubin with CubinFile,
  *        reassembles that disassembly with CuAsmParser, and checks that the reassembled cubin
@@ -84,9 +94,21 @@ inline void removeQuiet(const std::string& path) {
  * @param kernelName Name of the kernel/subdirectory under TestData/CheckDisasm; also the base
  *        name of the .cu fixture and the entry-point symbol within it.
  * @param arch Target SM architecture, e.g. "sm_75".
- * @return true if the round trip reproduced a byte-identical cubin.
+ * @param minArchSM Minimum numeric SM version (e.g. 70, 80) the kernel's instructions require.
+ *        If arch's numeric SM version is lower, the round trip is skipped and this automatically
+ *        passes, since nvcc either can't compile the kernel at all for that architecture or would
+ *        silently fall back to different instructions that don't exercise what's being tested.
+ *        0 (the default) means the kernel has no minimum architecture requirement.
+ * @return true if the round trip reproduced a byte-identical cubin, or if the check was skipped
+ *         because arch is below minArchSM.
  **/
-inline bool runCheckDisasm(const std::string& kernelName, const std::string& arch) {
+inline bool runCheckDisasm(const std::string& kernelName, const std::string& arch, int minArchSM = 0) {
+    if (minArchSM > 0 && smArchNumber(arch) < minArchSM) {
+        std::cout << "[SKIP] CheckDisasm " << kernelName << " (" << arch << "): requires sm_" << minArchSM
+                  << " or newer\n";
+        return true;
+    }
+
     const std::string dir = std::string(CUASM_TESTDATA_DIR) + "/CheckDisasm/" + kernelName;
     const std::string cuFile = dir + "/" + kernelName + ".cu";
     const std::string origCubin = dir + "/" + kernelName + "." + arch + ".orig.cubin";
