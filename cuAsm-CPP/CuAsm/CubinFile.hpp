@@ -137,8 +137,6 @@ private:
     std::map<std::string, CubinElfSection> m_ELFSections;
     std::vector<CubinElfSegment> m_ELFSegments;
 
-    std::string m_CubinBytes;
-
     std::vector<std::string> m_AsmLines;
     std::map<std::string, std::pair<int, int>> m_AsmSectionMarkers;
 };

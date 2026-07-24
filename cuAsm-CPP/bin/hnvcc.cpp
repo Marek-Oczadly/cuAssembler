@@ -37,16 +37,16 @@ namespace fs = std::filesystem;
 
 namespace {
 
-// Environment variable used to select the op.
+// Environment variable used to select the op (HNVCC_OP).
 const std::string HNVCC_OP = "HNVCC_OP";
 
-// Temporary dir for intermediate files, deleted after dump/hack.
+// Temporary dir for intermediate files, deleted after dump/hack (hnvcc_keep_dir).
 const std::string KEEP_DIR = "hnvcc_keep_dir";
 
-// Prefix for hacked cubins.
+// Prefix for hacked cubins (hack).
 const std::string HACK_PREFIX = "hack";
 
-// Prefix for dumped cubins.
+// Prefix for dumped cubins (dump).
 const std::string DUMP_PREFIX = "dump";
 
 const char* const USAGE_MSG = R"(
@@ -198,9 +198,9 @@ std::optional<std::string> getCubinArg(const std::vector<std::string>& cmd) {
 void doHackOrDump(const std::vector<std::string>& args, const std::string& op) {
     std::vector<std::string> argsDryrun = args;
     argsDryrun[0] = "nvcc";
-    argsDryrun.push_back("-keep");
-    argsDryrun.push_back("-keep-dir=" + KEEP_DIR);
-    argsDryrun.push_back("-dryrun");
+    argsDryrun.push_back("-keep");  // Keep intermediate files
+    argsDryrun.push_back("-keep-dir=" + KEEP_DIR); // Location for intermediate files
+	argsDryrun.push_back("-dryrun"); // List compilation subcommands without executing them
 
     std::cout << "#### Getting command list..." << std::endl;
     auto [code, outS] = run(argsDryrun);
@@ -208,18 +208,18 @@ void doHackOrDump(const std::vector<std::string>& args, const std::string& op) {
         throw std::runtime_error("Empty command list!!!");
     }
 
-    static const std::regex varLinePattern(R"(^#\$ \w+=)");
+	static const std::regex varLinePattern(R"(^#\$ \w+=)"); // #$ _WORD_=
 
     std::vector<std::vector<std::string>> cmds;
     std::istringstream lines(outS);
     std::string line;
     while (std::getline(lines, line)) {
         std::string sline = trim(line);
-        if (sline.empty() || sline.rfind("#$ ", 0) != 0 || std::regex_search(sline, varLinePattern)) {
+		if (sline.empty() || sline.rfind("#$ ", 0) != 0 || std::regex_search(sline, varLinePattern)) { // Skip commands that are not #$ commands, or are variable assignments like "#$ _WORD_="
             continue;
         }
 
-        bool isRmDlink = (sline.rfind("#$ rm", 0) == 0 || sline.rfind("#$ erase", 0) == 0) &&
+        bool isRmDlink = (sline.rfind("#$ rm", 0) == 0 || sline.rfind("#$ erase", 0) == 0) && // Skip commands that remove _dlink.reg.c files
                           sline.size() >= 12 && sline.compare(sline.size() - 12, 12, "_dlink.reg.c") == 0;
         if (isRmDlink) {
             continue;

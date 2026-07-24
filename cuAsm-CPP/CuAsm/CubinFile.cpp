@@ -9,7 +9,7 @@
 #include <sstream>
 #include <stdexcept>
 
-#include <elfio/elf_types.hpp>
+#include <elfio/elfio.hpp>
 
 #include "CuAsmLogger.hpp"
 #include "CuControlCode.hpp"
@@ -119,7 +119,6 @@ void CubinFile::reset() {
 
     m_AsmLines.clear();
     m_AsmSectionMarkers.clear();
-    m_CubinBytes.clear();
 
     m_Arch.reset();
     m_VirtualSMVersion = 0;
@@ -130,25 +129,33 @@ void CubinFile::loadCubin(const std::string& binName) {
     CuAsmLogger::logTimeIt("CubinFile::loadCubin", [this, &binName] {
         CuAsmLogger::logEntry("Loading cubin file " + binName + "...");
 
-        reset();
+        reset();    // Resets all vectors and such to the default state
 
         std::map<std::uint64_t, std::string> secStartDict;
         std::map<std::uint64_t, std::string> secEndDict;
 
-        {
-            std::ifstream fin(binName, std::ios::binary);
-            if (!fin) {
-                throw std::runtime_error("Cannot open cubin file " + binName);
-            }
-            std::ostringstream ss;
-            ss << fin.rdbuf();
-            m_CubinBytes = ss.str();
+        // Parse the whole cubin (ELF header, section header table, program header table) via
+        // ELFIO's high-level loader instead of hand-rolled struct memcpy's.
+        ELFIO::elfio elfReader;
+        if (!elfReader.load(binName)) {
+            throw std::runtime_error("Cannot open or parse cubin file " + binName + " as ELF!");
         }
 
-        if (m_CubinBytes.size() < sizeof(ELFIO::Elf64_Ehdr)) {
-            throw std::runtime_error("Cubin file " + binName + " is too small to contain an ELF header!");
-        }
-        std::memcpy(&m_ELFFileHeader, m_CubinBytes.data(), sizeof(m_ELFFileHeader));
+        m_ELFFileHeader.e_ident[ELFIO::EI_OSABI] = elfReader.get_os_abi();
+        m_ELFFileHeader.e_ident[ELFIO::EI_ABIVERSION] = elfReader.get_abi_version();
+        m_ELFFileHeader.e_type = elfReader.get_type();
+        m_ELFFileHeader.e_machine = elfReader.get_machine();
+        m_ELFFileHeader.e_version = elfReader.get_version();
+        m_ELFFileHeader.e_entry = elfReader.get_entry();
+        m_ELFFileHeader.e_phoff = elfReader.get_segments_offset();
+        m_ELFFileHeader.e_shoff = elfReader.get_sections_offset();
+        m_ELFFileHeader.e_flags = elfReader.get_flags();
+        m_ELFFileHeader.e_ehsize = elfReader.get_header_size();
+        m_ELFFileHeader.e_phentsize = elfReader.get_segment_entry_size();
+        m_ELFFileHeader.e_phnum = static_cast<ELFIO::Elf_Half>(elfReader.segments.size());
+        m_ELFFileHeader.e_shentsize = elfReader.get_section_entry_size();
+        m_ELFFileHeader.e_shnum = static_cast<ELFIO::Elf_Half>(elfReader.sections.size());
+        m_ELFFileHeader.e_shstrndx = elfReader.get_section_name_str_index();
 
         if (m_ELFFileHeader.e_type != ELFIO::ET_EXEC) {
             CuAsmLogger::logWarning(format("Currently only ET_EXEC type of elf is supported! %s given...",
@@ -167,27 +174,29 @@ void CubinFile::loadCubin(const std::string& binName) {
         m_VirtualSMVersion = static_cast<int>(vsmVersion);
         m_ToolKitVersion = m_ELFFileHeader.e_version;
 
-        // parse raw section header table
-        std::vector<ELFIO::Elf64_Shdr> rawShdrs(m_ELFFileHeader.e_shnum);
-        for (std::uint16_t i = 0; i < m_ELFFileHeader.e_shnum; ++i) {
-            const std::size_t off = m_ELFFileHeader.e_shoff + static_cast<std::size_t>(i) * m_ELFFileHeader.e_shentsize;
-            std::memcpy(&rawShdrs[i], m_CubinBytes.data() + off, sizeof(ELFIO::Elf64_Shdr));
-        }
-
-        const ELFIO::Elf64_Shdr& shstrtabHdr = rawShdrs[m_ELFFileHeader.e_shstrndx];
-        const std::string shstrtabData = m_CubinBytes.substr(shstrtabHdr.sh_offset, shstrtabHdr.sh_size);
-
         std::uint64_t shIndex = m_ELFFileHeader.e_ehsize;
         std::vector<std::tuple<std::uint64_t, std::uint64_t, std::string>> shEdgeList;
 
-        for (std::uint16_t isec = 0; isec < m_ELFFileHeader.e_shnum; ++isec) {
-            const ELFIO::Elf64_Shdr& shdr = rawShdrs[isec];
-            const std::string secName = readCString(shstrtabData, shdr.sh_name);
+        for (int isec = 0; isec < static_cast<int>(elfReader.sections.size()); ++isec) {
+            const ELFIO::section* elfioSection = elfReader.sections[isec];
+            const std::string secName = elfioSection->get_name();
+
+            ELFIO::Elf64_Shdr shdr{};
+            shdr.sh_name = elfioSection->get_name_string_offset();
+            shdr.sh_type = elfioSection->get_type();
+            shdr.sh_flags = elfioSection->get_flags();
+            shdr.sh_addr = elfioSection->get_address();
+            shdr.sh_offset = elfioSection->get_offset();
+            shdr.sh_size = elfioSection->get_size();
+            shdr.sh_link = elfioSection->get_link();
+            shdr.sh_info = elfioSection->get_info();
+            shdr.sh_addralign = elfioSection->get_addr_align();
+            shdr.sh_entsize = elfioSection->get_entry_size();
 
             CubinElfSection section;
             section.header = shdr;
-            if (shdr.sh_type != ELFIO::SHT_NOBITS) {
-                section.data = m_CubinBytes.substr(shdr.sh_offset, shdr.sh_size);
+            if (shdr.sh_type != ELFIO::SHT_NOBITS && shdr.sh_size > 0) {
+                section.data.assign(elfioSection->get_data(), static_cast<std::size_t>(shdr.sh_size));
             }
             m_ELFSections[secName] = std::move(section);
             m_ELFSectionOrder.push_back(secName);
@@ -220,14 +229,19 @@ void CubinFile::loadCubin(const std::string& binName) {
             secEndDict[pend] = PROGRAM_HEADER_TAG;
         }
 
-        std::vector<ELFIO::Elf64_Phdr> rawPhdrs(m_ELFFileHeader.e_phnum);
-        for (std::uint16_t i = 0; i < m_ELFFileHeader.e_phnum; ++i) {
-            const std::size_t off = m_ELFFileHeader.e_phoff + static_cast<std::size_t>(i) * m_ELFFileHeader.e_phentsize;
-            std::memcpy(&rawPhdrs[i], m_CubinBytes.data() + off, sizeof(ELFIO::Elf64_Phdr));
-        }
+        for (int iseg = 0; iseg < static_cast<int>(elfReader.segments.size()); ++iseg) {
+            const ELFIO::segment* elfioSegment = elfReader.segments[iseg];
 
-        for (std::size_t iseg = 0; iseg < rawPhdrs.size(); ++iseg) {
-            const ELFIO::Elf64_Phdr& segh = rawPhdrs[iseg];
+            ELFIO::Elf64_Phdr segh{};
+            segh.p_type = elfioSegment->get_type();
+            segh.p_flags = elfioSegment->get_flags();
+            segh.p_offset = elfioSegment->get_offset();
+            segh.p_vaddr = elfioSegment->get_virtual_address();
+            segh.p_paddr = elfioSegment->get_physical_address();
+            segh.p_filesz = elfioSegment->get_file_size();
+            segh.p_memsz = elfioSegment->get_memory_size();
+            segh.p_align = elfioSegment->get_align();
+
             CubinElfSegment segment;
             segment.header = segh;
 
