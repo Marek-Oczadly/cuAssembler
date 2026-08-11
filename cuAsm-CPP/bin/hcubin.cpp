@@ -25,7 +25,6 @@
 //     hcubin a.cubin x.bin
 //         same as `hcubin a.cubin -o x.bin`
 
-#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <optional>
@@ -48,26 +47,29 @@ struct Args {
 };
 
 /**
- * @brief Verifies that an input file exists, aborting the program otherwise.
+ * @brief Verifies that an input file exists.
  * @param fname Path of the input file to check.
+ * @return True if the file exists; false (after printing a diagnostic) otherwise.
  **/
-void checkInFileExistence(const std::string& fname) {
+bool checkInFileExistence(const std::string& fname) {
     if (!fs::is_regular_file(fname)) {
         std::cout << "IOError! Input file \"" << fname << "\" not found!" << std::endl;
-        std::exit(-1);
+        return false;
     }
+    return true;
 }
 
 /**
  * @brief Checks whether an output file already exists and, if so, backs it up before it is overwritten.
  * @param fname Path of the output file to check.
  * @param doBackup If the file exists, rename it to "fname~" before returning; otherwise leave it untouched.
+ * @return True on success; false (after printing a diagnostic) if fname is an existing directory.
  **/
-void checkOutFileBackup(const std::string& fname, bool doBackup = true) {
+bool checkOutFileBackup(const std::string& fname, bool doBackup = true) {
     if (fs::exists(fname)) {
         if (fs::is_directory(fname)) {
             std::cout << "IOError!!! Output file \"" << fname << "\" is an existing directory!" << std::endl;
-            std::exit(-1);
+            return false;
         } else {
             if (doBackup) {
                 std::string bname = fname + "~";
@@ -76,6 +78,7 @@ void checkOutFileBackup(const std::string& fname, bool doBackup = true) {
             }
         }
     }
+    return true;
 }
 
 /**
@@ -83,25 +86,26 @@ void checkOutFileBackup(const std::string& fname, bool doBackup = true) {
  *        the result to a new cubin file.
  * @param fin Path of the input cubin file.
  * @param fout Optional path of the output cubin file; defaults to fin with its extension replaced by ".hcubin".
- * @return True if the cubin needed (and received) the desc hack; false if its SM version predates
- *         Ampere and no hack was necessary.
+ * @return Whether the cubin needed (and received) the desc hack (true) or its SM version predates
+ *         Ampere and no hack was necessary (false) -- both are successful outcomes; std::nullopt if
+ *         the input/output file checks failed.
  **/
-bool hcubin(const std::string& fin, std::optional<std::string> fout = std::nullopt) {
+std::optional<bool> hcubin(const std::string& fin, std::optional<std::string> fout = std::nullopt) {
     std::string outname = fout.value_or(fs::path(fin).replace_extension(".hcubin").string());
 
-    checkInFileExistence(fin);
-    checkOutFileBackup(outname);
+    if (!checkInFileExistence(fin) || !checkOutFileBackup(outname)) {
+        return std::nullopt;
+    }
 
     return CuAsm::fixCubinDesc(fin, outname);
 }
 
 /**
- * @brief Prints the command-line usage message and terminates the program.
+ * @brief Prints the command-line usage message.
  * @param prog Program name to display in the usage message.
  **/
-void printUsageAndExit(const std::string& prog) {
+void printUsage(const std::string& prog) {
     std::cout << "Usage: " << prog << " infile [outfile] [-o outfile] [-f logfile] [-v|-q]" << std::endl;
-    std::exit(-1);
 }
 
 /**
@@ -109,9 +113,10 @@ void printUsageAndExit(const std::string& prog) {
  *        (positional infile[s], -o/--output, -f/--logfile, -v/--verbose, -q/--quiet).
  * @param argc Argument count, as passed to main().
  * @param argv Argument vector, as passed to main().
- * @return The parsed Args, with infiles containing either 1 (input only) or 2 (input, output) entries.
+ * @return The parsed Args, with infiles containing either 1 (input only) or 2 (input, output) entries;
+ *         std::nullopt if the arguments were invalid (usage has already been printed).
  **/
-Args parseArgs(int argc, char** argv) {
+std::optional<Args> parseArgs(int argc, char** argv) {
     Args args;
     const std::string prog = argc > 0 ? fs::path(argv[0]).filename().string() : "hcubin";
 
@@ -119,10 +124,16 @@ Args parseArgs(int argc, char** argv) {
         std::string arg = argv[i];
 
         if (arg == "-o" || arg == "--output") {
-            if (i + 1 >= argc) printUsageAndExit(prog);
+            if (i + 1 >= argc) {
+                printUsage(prog);
+                return std::nullopt;
+            }
             args.outfile = argv[++i];
         } else if (arg == "-f" || arg == "--logfile") {
-            if (i + 1 >= argc) printUsageAndExit(prog);
+            if (i + 1 >= argc) {
+                printUsage(prog);
+                return std::nullopt;
+            }
             args.logfile = argv[++i];
         } else if (arg == "-v" || arg == "--verbose") {
             args.verbose = true;
@@ -135,7 +146,7 @@ Args parseArgs(int argc, char** argv) {
 
     if (args.infiles.empty() || args.infiles.size() > 2) {
         std::cout << "The infile should be of length 1 (second infered by replacing file extension) or 2 !!!" << std::endl;
-        std::exit(-1);
+        return std::nullopt;
     }
 
     return args;
@@ -148,10 +159,14 @@ Args parseArgs(int argc, char** argv) {
  *        cache-policy desc bit of the requested cubin.
  * @param argc Argument count.
  * @param argv Argument vector.
- * @return 0 on success; the process exits early with -1 on any argument, I/O, or hack error.
+ * @return 0 on success; -1 on any argument, I/O, or hack error.
  **/
 int main(int argc, char** argv) {
-    Args args = parseArgs(argc, argv);
+    std::optional<Args> argsOpt = parseArgs(argc, argv);
+    if (!argsOpt.has_value()) {
+        return -1;
+    }
+    Args& args = *argsOpt;
 
     std::string infile;
     std::optional<std::string> outfile;
@@ -164,7 +179,9 @@ int main(int argc, char** argv) {
         outfile = args.infiles[1];
     }
 
-    checkInFileExistence(infile);
+    if (!checkInFileExistence(infile)) {
+        return -1;
+    }
 
     int stdoutLevel;
     int fileLevel;
@@ -185,7 +202,7 @@ int main(int argc, char** argv) {
         CuAsm::CuAsmLogger::initLogger("", fileLevel, stdoutLevel, "cuasm", std::size_t(1) << 30, 3, false);
     }
 
-    if (!hcubin(infile, outfile)) {
+    if (!hcubin(infile, outfile).has_value()) {
         return -1;
     }
 

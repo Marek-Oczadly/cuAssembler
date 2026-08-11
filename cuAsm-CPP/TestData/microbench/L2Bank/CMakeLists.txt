@@ -15,7 +15,13 @@ if(CMAKE_CUDA_COMPILER)
     enable_language(CUDA)
 
     add_executable(l2bank_test l2bank_test.cu)
-    set_target_properties(l2bank_test PROPERTIES CUDA_ARCHITECTURES "50;75")
+    # Pinned independently of the host project's CMAKE_CXX_STANDARD (currently 23): nvcc's
+    # MSVC host-compiler pass only supports up to C++20, so this must not follow the host bump.
+    set_target_properties(l2bank_test PROPERTIES
+        CUDA_ARCHITECTURES "50;75"
+        CUDA_STANDARD 20
+        CUDA_STANDARD_REQUIRED ON
+    )
 
     # Matches the makefile's INCLUDE/LINK variables verbatim (hardcoded to the original dev
     # machine's Windows SDK install); adjust if building on a different machine.

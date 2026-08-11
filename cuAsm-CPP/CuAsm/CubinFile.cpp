@@ -131,7 +131,10 @@ void CubinFile::loadCubin(const std::string& binName) {
 
         reset();    // Resets all vectors and such to the default state
 
+		// Maps section start offsets to section names, used to find the nearest section for a segment's start.
         std::map<std::uint64_t, std::string> secStartDict;
+        
+		// Maps section end offsets to section names, used to find the nearest section for a segment's end.
         std::map<std::uint64_t, std::string> secEndDict;
 
         // Parse the whole cubin (ELF header, section header table, program header table) via
@@ -141,6 +144,7 @@ void CubinFile::loadCubin(const std::string& binName) {
             throw std::runtime_error("Cannot open or parse cubin file " + binName + " as ELF!");
         }
 
+        
         m_ELFFileHeader.e_ident[ELFIO::EI_OSABI] = elfReader.get_os_abi();
         m_ELFFileHeader.e_ident[ELFIO::EI_ABIVERSION] = elfReader.get_abi_version();
         m_ELFFileHeader.e_type = elfReader.get_type();
@@ -156,7 +160,7 @@ void CubinFile::loadCubin(const std::string& binName) {
         m_ELFFileHeader.e_shentsize = elfReader.get_section_entry_size();
         m_ELFFileHeader.e_shnum = static_cast<ELFIO::Elf_Half>(elfReader.sections.size());
         m_ELFFileHeader.e_shstrndx = elfReader.get_section_name_str_index();
-
+         
         if (m_ELFFileHeader.e_type != ELFIO::ET_EXEC) {
             CuAsmLogger::logWarning(format("Currently only ET_EXEC type of elf is supported! %s given...",
                                             elfTypeName(m_ELFFileHeader.e_type).c_str()));

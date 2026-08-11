@@ -130,14 +130,21 @@ private:
      **/
     void writeSegmentHeaderAsm(std::ostream& os, const ELFIO::Elf64_Phdr& segHeader, const CubinElfSegment& segRange) const;
 
+    /// Path to the cubin file this instance was loaded from.
     std::string m_CubinName;
 
+    /// Decoded ELF file header of the cubin.
     ELFIO::Elf64_Ehdr m_ELFFileHeader{};
+    /// Section names in their original on-disk order.
     std::vector<std::string> m_ELFSectionOrder;
+    /// Decoded sections (header + raw data), keyed by section name.
     std::map<std::string, CubinElfSection> m_ELFSections;
+    /// Decoded program-header (segment) entries, in on-disk order.
     std::vector<CubinElfSegment> m_ELFSegments;
 
+    /// Generated cuasm output, one entry per line.
     std::vector<std::string> m_AsmLines;
+    /// For each section name, the [start, end) line range it occupies within m_AsmLines.
     std::map<std::string, std::pair<int, int>> m_AsmSectionMarkers;
 };
 

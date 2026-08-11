@@ -32,7 +32,6 @@
 //         usually lines with only codes in source sass will be ignored for compact output.
 //         use option -k/--keepcode to keep those lines.
 
-#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <optional>
@@ -60,26 +59,29 @@ struct Args {
 };
 
 /**
- * @brief Verifies that an input file exists, aborting the program otherwise.
+ * @brief Verifies that an input file exists.
  * @param fname Path of the input file to check.
+ * @return True if the file exists; false (after printing a diagnostic) otherwise.
  **/
-void checkInFileExistence(const std::string& fname) {
+bool checkInFileExistence(const std::string& fname) {
     if (!fs::is_regular_file(fname)) {
         std::cout << "IOError! Input file \"" << fname << "\" not found!" << std::endl;
-        std::exit(-1);
+        return false;
     }
+    return true;
 }
 
 /**
  * @brief Checks whether an output file already exists and, if so, backs it up before it is overwritten.
  * @param fname Path of the output file to check.
  * @param doBackup If the file exists, rename it to "fname~" before returning; otherwise leave it untouched.
+ * @return True on success; false (after printing a diagnostic) if fname is an existing directory.
  **/
-void checkOutFileBackup(const std::string& fname, bool doBackup = true) {
+bool checkOutFileBackup(const std::string& fname, bool doBackup = true) {
     if (fs::exists(fname)) {
         if (fs::is_directory(fname)) {
             std::cout << "IOError!!! Output file \"" << fname << "\" is an existing directory!" << std::endl;
-            std::exit(-1);
+            return false;
         } else {
             if (doBackup) {
                 std::string bname = fname + "~";
@@ -88,6 +90,7 @@ void checkOutFileBackup(const std::string& fname, bool doBackup = true) {
             }
         }
     }
+    return true;
 }
 
 /**
@@ -96,14 +99,18 @@ void checkOutFileBackup(const std::string& fname, bool doBackup = true) {
  * @param fout Optional output filename; defaults to fin with its extension replaced by ".dsass".
  * @param keepcode Keep code-only lines (e.g. SM5x/6x control code lines) in the output instead of stripping them.
  * @param noDescHack Skip the SM8x cache-policy desc-bit hack, no matter the cubin's SM version.
+ * @return True on success; false if the output file check failed, the input was already a dsass
+ *         file, or dumping/translating the sass failed.
  **/
-void dsass(const std::string& fin, std::optional<std::string> fout = std::nullopt, bool keepcode = false, bool noDescHack = false) {
+bool dsass(const std::string& fin, std::optional<std::string> fout = std::nullopt, bool keepcode = false, bool noDescHack = false) {
     fs::path finPath(fin);
     std::string fext = finPath.extension().string();
     for (char& c : fext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
     std::string outname = fout.value_or(fs::path(finPath).replace_extension(".dsass").string());
-    checkOutFileBackup(outname);
+    if (!checkOutFileBackup(outname)) {
+        return false;
+    }
 
     std::string codeOnlyLineMode = keepcode ? "keep" : "none";
 
@@ -113,7 +120,7 @@ void dsass(const std::string& fin, std::optional<std::string> fout = std::nullop
         feeder.trans(outname, codeOnlyLineMode);
     } else if (fext == ".dsass") {
         CuAsm::CuAsmLogger::logError("Input file \"" + fin + "\" is already a dsass file!!! Skipping...");
-        std::exit(-1);
+        return false;
     } else if (fext == ".cubin") {
         std::string binname;
         std::string tmpname;
@@ -141,10 +148,10 @@ void dsass(const std::string& fin, std::optional<std::string> fout = std::nullop
             }
         } catch (const CuAsm::CalledProcessError& cpe) {
             CuAsm::CuAsmLogger::logError(std::string("Error when running cuobjdump!") + cpe.output());
-            std::exit(-1);
+            return false;
         } catch (const std::exception& e) {
             CuAsm::CuAsmLogger::logError(std::string("DumpSass Error!") + e.what());
-            std::exit(-1);
+            return false;
         }
 
         std::istringstream sio(sass);
@@ -159,10 +166,10 @@ void dsass(const std::string& fin, std::optional<std::string> fout = std::nullop
             sass = CuAsm::checkOutput({"cuobjdump", "-sass", fin}, /*mergeStderr=*/false);
         } catch (const CuAsm::CalledProcessError& cpe) {
             CuAsm::CuAsmLogger::logError(std::string("Error when running cuobjdump!") + cpe.output());
-            std::exit(-1);
+            return false;
         } catch (const std::exception& e) {
             CuAsm::CuAsmLogger::logError(std::string("DumpSass Error!") + e.what());
-            std::exit(-1);
+            return false;
         }
 
         std::istringstream sio(sass);
@@ -170,16 +177,17 @@ void dsass(const std::string& fin, std::optional<std::string> fout = std::nullop
         CuAsm::CuAsmLogger::logEntry("Translating to " + outname + " ...");
         feeder.trans(outname, codeOnlyLineMode);
     }
+
+    return true;
 }
 
 /**
- * @brief Prints the command-line usage message and terminates the program.
+ * @brief Prints the command-line usage message.
  * @param prog Program name to display in the usage message.
  **/
-void printUsageAndExit(const std::string& prog) {
+void printUsage(const std::string& prog) {
     std::cout << "Usage: " << prog
               << " infile [outfile] [-o outfile] [-k] [-n] [-f logfile] [-v|-q]" << std::endl;
-    std::exit(-1);
 }
 
 /**
@@ -188,9 +196,10 @@ void printUsageAndExit(const std::string& prog) {
  *        -v/--verbose, -q/--quiet).
  * @param argc Argument count, as passed to main().
  * @param argv Argument vector, as passed to main().
- * @return The parsed Args, with infiles containing either 1 (input only) or 2 (input, output) entries.
+ * @return The parsed Args, with infiles containing either 1 (input only) or 2 (input, output) entries;
+ *         std::nullopt if the arguments were invalid (usage has already been printed).
  **/
-Args parseArgs(int argc, char** argv) {
+std::optional<Args> parseArgs(int argc, char** argv) {
     Args args;
     const std::string prog = argc > 0 ? fs::path(argv[0]).filename().string() : "dsass";
 
@@ -198,10 +207,16 @@ Args parseArgs(int argc, char** argv) {
         std::string arg = argv[i];
 
         if (arg == "-o" || arg == "--output") {
-            if (i + 1 >= argc) printUsageAndExit(prog);
+            if (i + 1 >= argc) {
+                printUsage(prog);
+                return std::nullopt;
+            }
             args.outfile = argv[++i];
         } else if (arg == "-f" || arg == "--logfile") {
-            if (i + 1 >= argc) printUsageAndExit(prog);
+            if (i + 1 >= argc) {
+                printUsage(prog);
+                return std::nullopt;
+            }
             args.logfile = argv[++i];
         } else if (arg == "-k" || arg == "--keepcode") {
             args.keepcode = true;
@@ -218,7 +233,7 @@ Args parseArgs(int argc, char** argv) {
 
     if (args.infiles.empty() || args.infiles.size() > 2) {
         std::cout << "The infile should be of length 1 or 2 (second as output)!!!" << std::endl;
-        std::exit(-1);
+        return std::nullopt;
     }
 
     return args;
@@ -231,10 +246,14 @@ Args parseArgs(int argc, char** argv) {
  *        control-code-annotated sass from the requested input.
  * @param argc Argument count.
  * @param argv Argument vector.
- * @return 0 on success; the process exits early with -1 on any argument or I/O error.
+ * @return 0 on success; -1 on any argument or I/O error.
  **/
 int main(int argc, char** argv) {
-    Args args = parseArgs(argc, argv);
+    std::optional<Args> argsOpt = parseArgs(argc, argv);
+    if (!argsOpt.has_value()) {
+        return -1;
+    }
+    Args& args = *argsOpt;
 
     std::string infile;
     std::optional<std::string> outfile;
@@ -247,7 +266,9 @@ int main(int argc, char** argv) {
         outfile = args.infiles[1];
     }
 
-    checkInFileExistence(infile);
+    if (!checkInFileExistence(infile)) {
+        return -1;
+    }
 
     int stdoutLevel;
     int fileLevel;
@@ -268,7 +289,9 @@ int main(int argc, char** argv) {
         CuAsm::CuAsmLogger::initLogger("", fileLevel, stdoutLevel, "cuasm", std::size_t(1) << 30, 3, false);
     }
 
-    dsass(infile, outfile, args.keepcode, args.nodeschack);
+    if (!dsass(infile, outfile, args.keepcode, args.nodeschack)) {
+        return -1;
+    }
 
     return 0;
 }
