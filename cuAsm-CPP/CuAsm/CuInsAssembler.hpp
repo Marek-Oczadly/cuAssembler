@@ -8,6 +8,7 @@
 
 #include "CuSMVersion.hpp"
 #include "utils/BigNum.hpp"
+#include "utils/OrderedMap.hpp"
 #include "utils/RationalMatrix.hpp"
 
 namespace CuAsm {
@@ -19,9 +20,10 @@ using InsVals = std::vector<BigInt>;
 /// Modifier list for one observed instruction instance, e.g. {"0_MOV"}.
 using InsModi = std::vector<std::string>;
 
-/// Ordered set of every modifier seen so far; a modifier's position is its assigned column index,
-/// mirroring the insertion-ordered dict CuInsAssembler.m_InsModiSet relies on.
-using ModiSet = std::vector<std::string>;
+/// Ordered set of every modifier seen so far, keyed by name with its assigned column index as the
+/// mapped value; backed by OrderedMap for O(1) lookup instead of a linear scan, mirroring the
+/// insertion-ordered dict CuInsAssembler.m_InsModiSet relies on.
+using ModiSet = OrderedMap<std::string, int>;
 
 /// One (vals, modi, code) sample kept in CuInsAssembler.m_InsRepos.
 struct InsReposEntry {
@@ -59,10 +61,11 @@ struct CuInsAssemblerState {
     RationalMatrix valNullMat;
     RationalMatrix rhs;
     std::vector<InsInfo> insRecords;
-    /// Insertion-ordered (addr, code, asm) records, mirroring the insertion-ordered dict
+    /// Insertion-ordered (addr, code, asm) records keyed by code-diff, backed by OrderedMap so
+    /// lookups don't need a linear scan; mirroring the insertion-ordered dict
     /// CuInsAssembler.m_ErrRecords relies on -- a std::map would reorder entries by code-diff
     /// value instead of preserving discovery order.
-    std::vector<std::pair<BigInt, InsInfo>> errRecords;
+    OrderedMap<BigInt, InsInfo> errRecords;
     CuSMVersion arch;
 };
 
@@ -235,7 +238,7 @@ public:
 
     std::vector<InsInfo> m_InsRecords;
     /// Insertion-ordered, mirroring python's insertion-ordered dict; see CuInsAssemblerState::errRecords.
-    std::vector<std::pair<BigInt, InsInfo>> m_ErrRecords;
+    OrderedMap<BigInt, InsInfo> m_ErrRecords;
 
     CuSMVersion m_Arch;
 };

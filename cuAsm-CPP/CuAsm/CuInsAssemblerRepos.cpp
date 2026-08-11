@@ -250,12 +250,13 @@ ModiSet parseModiSetDict(Tokenizer& tz) {
     }
     tz.take();
 
+    // Sorting by the serialized index (rather than trusting text order) preserves insertion order
+    // even if a future writer doesn't emit entries in index order.
+    std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) { return a.second < b.second; });
+
     ModiSet result;
     for (const auto& [name, idx] : entries) {
-        if (static_cast<int>(result.size()) <= idx) {
-            result.resize(static_cast<std::size_t>(idx) + 1);
-        }
-        result[static_cast<std::size_t>(idx)] = name;
+        result.insert_or_assign(name, idx);
     }
     return result;
 }
@@ -332,8 +333,8 @@ std::vector<InsInfo> parseInsInfoList(Tokenizer& tz) {
     return out;
 }
 
-std::vector<std::pair<BigInt, InsInfo>> parseErrRecordsDict(Tokenizer& tz) {
-    std::vector<std::pair<BigInt, InsInfo>> out;
+OrderedMap<BigInt, InsInfo> parseErrRecordsDict(Tokenizer& tz) {
+    OrderedMap<BigInt, InsInfo> out;
     tz.takeExpected(Token::Type::LBrace, "{");
     while (tz.peek().type != Token::Type::RBrace) {
         const BigInt key = parseBigIntToken(tz.takeExpected(Token::Type::Num, "number").text);
@@ -345,7 +346,7 @@ std::vector<std::pair<BigInt, InsInfo>> parseErrRecordsDict(Tokenizer& tz) {
         tz.takeExpected(Token::Type::Comma, ",");
         const std::string asmText = tz.takeExpected(Token::Type::Str, "string").text;
         tz.takeExpected(Token::Type::RParen, ")");
-        out.emplace_back(key, InsInfo{addr.convert_to<std::uint64_t>(), code, asmText});
+        out.insert_or_assign(key, InsInfo{addr.convert_to<std::uint64_t>(), code, asmText});
         if (tz.peek().type == Token::Type::Comma) {
             tz.take();
         }
@@ -373,7 +374,7 @@ CuInsAssemblerState parseCuInsAssembler(Tokenizer& tz) {
     RationalMatrix valNullMat;
     RationalMatrix rhs;
     std::vector<InsInfo> insRecords;
-    std::vector<std::pair<BigInt, InsInfo>> errRecords;
+    OrderedMap<BigInt, InsInfo> errRecords;
     std::optional<CuSMVersion> arch;
 
     while (tz.peek().type != Token::Type::RBrace) {

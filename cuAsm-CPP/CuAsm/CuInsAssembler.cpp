@@ -13,32 +13,13 @@ namespace {
 
 /** @brief Finds a modifier's assigned index in a ModiSet, mirroring dict lookup by key. */
 int indexOfModi(const ModiSet& modiSet, const std::string& modi) {
-    const auto it = std::find(modiSet.begin(), modiSet.end(), modi);
-    return it == modiSet.end() ? -1 : static_cast<int>(it - modiSet.begin());
+    const auto it = modiSet.find(modi);
+    return it == modiSet.end() ? -1 : it->second;
 }
 
 /** @brief Checks whether every modifier in modi is already present in modiSet. */
 bool allModiKnown(const ModiSet& modiSet, const InsModi& modi) {
     return std::all_of(modi.begin(), modi.end(), [&](const std::string& m) { return indexOfModi(modiSet, m) >= 0; });
-}
-
-/// Backing store for m_ErrRecords; keyed lookups, mirroring dict lookup by key.
-using ErrRecords = std::vector<std::pair<BigInt, InsInfo>>;
-
-/** @brief Finds an error record by its code-diff key, mirroring dict lookup by key. */
-ErrRecords::iterator findErrRecord(ErrRecords& records, const BigInt& codeDiff) {
-    return std::find_if(records.begin(), records.end(), [&codeDiff](const auto& kv) { return kv.first == codeDiff; });
-}
-
-/** @brief Inserts or overwrites an error record, mirroring dict `__setitem__` (which preserves the
- *         key's original position on overwrite instead of moving it to the end). */
-void setErrRecord(ErrRecords& records, const BigInt& codeDiff, const InsInfo& info) {
-    const auto it = findErrRecord(records, codeDiff);
-    if (it == records.end()) {
-        records.emplace_back(codeDiff, info);
-    } else {
-        it->second = info;
-    }
 }
 
 /** @brief python repr() of a plain string, mirroring the single-quoted string literals used
@@ -282,8 +263,7 @@ std::vector<InsFeederRecord> CuInsAssembler::recordsFeeder() const {
 bool CuInsAssembler::expandModiSet(const InsModi& modi) {
     bool updated = false;
     for (const std::string& m : modi) {
-        if (indexOfModi(m_InsModiSet, m) < 0) {
-            m_InsModiSet.push_back(m);
+        if (m_InsModiSet.emplace(m, static_cast<int>(m_InsModiSet.size())).second) {
             updated = true;
         }
     }
@@ -293,7 +273,8 @@ bool CuInsAssembler::expandModiSet(const InsModi& modi) {
 std::vector<BigRational> CuInsAssembler::buildInsValVec(const InsVals& vals, const InsModi& modi) const {
     std::vector<BigRational> insval;
     insval.reserve(m_InsModiSet.size() + vals.size());
-    for (const std::string& m : m_InsModiSet) {
+    for (const auto& [m, idx] : m_InsModiSet) {
+        (void)idx;
         const bool has = std::find(modi.begin(), modi.end(), m) != modi.end();
         insval.emplace_back(has ? 1 : 0);
     }
@@ -373,9 +354,9 @@ CuInsAssembler::PushResult CuInsAssembler::push(const InsVals& vals, const InsMo
         const BigInt inscode = boost::multiprecision::numerator(inscodeRat);
         const BigInt codeDiff = inscode - code;
 
-        const auto it = findErrRecord(m_ErrRecords, codeDiff);
+        const auto it = m_ErrRecords.find(codeDiff);
         if (it == m_ErrRecords.end()) {
-            setErrRecord(m_ErrRecords, codeDiff, insInfo);
+            m_ErrRecords.insert_or_assign(codeDiff, insInfo);
             CuAsmLogger::logError("Error when verifying for " + m_InsKey);
             CuAsmLogger::logError("    Asm : " + insInfo.asmText);
             CuAsmLogger::logError("    InputCode : " + m_Arch.formatCode(code));
@@ -394,7 +375,7 @@ CuInsAssembler::PushResult CuInsAssembler::push(const InsVals& vals, const InsMo
     oss << inscodeRat;
     CuAsmLogger::logCritical("    AsmCode   : (" + oss.str() + ")!");
 
-    setErrRecord(m_ErrRecords, code, insInfo);
+    m_ErrRecords.insert_or_assign(code, insInfo);
     return {false, "NewConflict"};
 }
 
@@ -478,8 +459,13 @@ void CuInsAssembler::printSolution() const {
     for (int v = 0; v < nvals; ++v) {
         names[static_cast<std::size_t>(v)] = "V" + std::to_string(v);
     }
-    for (int i = 0; i < nmodi; ++i) {
-        names[static_cast<std::size_t>(nvals + i)] = m_InsModiSet[static_cast<std::size_t>(i)];
+    {
+        int i = 0;
+        for (const auto& [m, idx] : m_InsModiSet) {
+            (void)idx;
+            names[static_cast<std::size_t>(nvals + i)] = m;
+            ++i;
+        }
     }
 
     std::vector<BigRational> revSol;
@@ -508,8 +494,8 @@ std::string CuInsAssembler::reprPSol() const {
     const int total = nvals + nmodi;
 
     std::vector<std::string> names(static_cast<std::size_t>(nmodi));
-    for (int i = 0; i < nmodi; ++i) {
-        names[static_cast<std::size_t>(i)] = m_InsModiSet[static_cast<std::size_t>(i)];
+    for (const auto& [m, idx] : m_InsModiSet) {
+        names[static_cast<std::size_t>(idx)] = m;
     }
     names.emplace_back("Pred");
     for (int v = 1; v < nvals; ++v) {
@@ -571,9 +557,10 @@ std::string CuInsAssembler::repr() const {
     sio << "], \n";
 
     sio << "  \"InsModiSet\" : {";
-    for (std::size_t i = 0; i < m_InsModiSet.size(); ++i) {
-        sio << pyStrRepr(m_InsModiSet[i]) << ": " << i;
-        if (i + 1 < m_InsModiSet.size()) {
+    std::size_t modiWritten = 0;
+    for (const auto& [m, idx] : m_InsModiSet) {
+        sio << pyStrRepr(m) << ": " << idx;
+        if (++modiWritten < m_InsModiSet.size()) {
             sio << ", ";
         }
     }
