@@ -123,7 +123,7 @@ std::vector<std::string> splitArgs(const std::string& farg) {
 
 /** @brief Mimics python re.match: true if re matches starting at position 0 of s. */
 bool matchAtStart(const std::string& s, const std::regex& re, std::smatch& m) {
-    return std::regex_search(s, m, re) && m.position(0) == 0;
+    return std::regex_search(s, m, re, std::regex_constants::match_continuous);
 }
 
 /**
@@ -921,7 +921,9 @@ struct CuAsmParser::Impl {
     void emitBytes(const std::string& bs);
 
     enum class LineType { Blank, Label, Directive, Code, Unknown };
-    LineType getLineType(const std::string& line);
+    /// Classifies a line, optionally returning the Label/Directive regex match that determined the
+    /// classification so callers don't need to re-run the same regex to get at its capture groups.
+    LineType getLineType(const std::string& line, std::smatch* outMatch = nullptr);
     void emitTypedBytes(const std::string& dtype, const std::vector<std::string>& args);
     std::string genSectionPaddingBytes(CuAsmSection& sec, std::uint64_t padSize);
     std::pair<std::uint64_t, std::uint64_t> updateSectionPadding(CuAsmSection* sec, std::uint64_t fileOffset, std::uint64_t memOffset,
@@ -1101,12 +1103,11 @@ void CuAsmParser::Impl::preScan() {
             continue;
         }
 
-        LineType ltype = getLineType(nline);
+        std::smatch m;
+        LineType ltype = getLineType(nline, &m);
         if (ltype == LineType::Unknown) {
             doAssert(false, "Unreconized line contents:\n     " + rawLine);
         } else if (ltype == LineType::Label) {
-            std::smatch m;
-            matchAtStart(nline, mLabelPattern, m);
             std::string rlabel = m[1].str();
             // A label marking a SYNC/BRK reconvergence instruction's own address must use that
             // instruction's control-word-aware offset, not the leftover write cursor from the
@@ -1128,8 +1129,6 @@ void CuAsmParser::Impl::preScan() {
                 doAssert(false, "Redefinition of label " + v.name + "! First occurrence in Line" + std::to_string(v.lineNo) + "!");
             }
         } else if (ltype == LineType::Directive) {
-            std::smatch m;
-            matchAtStart(nline, mDirectivePattern, m);
             std::string cmd = m[1].str();
 
             auto it = mDirDict.find(cmd);
@@ -1154,7 +1153,7 @@ void CuAsmParser::Impl::gatherTextSectionSizeLabel() {
     mSecSizeLabel.clear();
     for (auto& [label, labelPtr] : mLabelDict) {
         const std::string& secname = labelPtr->section->name;
-        if (secname.rfind(".text", 0) != 0) {
+        if (!secname.starts_with(".text")) {
             continue;
         }
         if (labelPtr->offset == mSectionDict.at(secname)->getDataSize()) {
@@ -1174,7 +1173,7 @@ void CuAsmParser::Impl::parseKernels() {
     std::map<int, int> regnumdict;
 
     for (const auto& [secname, range] : sectionMarkers) {
-        if (secname.rfind(".text.", 0) == 0) {
+        if (secname.starts_with(".text.")) {
             CuAsmSection* section = mSectionDict.at(secname).get();
             mCurrSection = section;
             parseKernelText(*section, range.first, range.second);
@@ -1369,7 +1368,7 @@ void CuAsmParser::Impl::evalFixups() {
         try {
             const std::string& expr = fixup.expr;
 
-            if (!relDtypes.count(fixup.dtype) || expr.rfind("index@", 0) == 0) {
+            if (!relDtypes.count(fixup.dtype) || expr.starts_with("index@")) {
                 ExprResult res = evalExpr(expr);
                 fixup.value = res.value;
                 updateSectionForFixup(fixup);
@@ -1483,7 +1482,7 @@ void CuAsmParser::Impl::layoutSections() {
         CuAsmSection& sec = *secPtr;
 
         std::uint64_t align = sec.addralign;
-        if (prevSec != nullptr && prevSec->name.rfind(".text", 0) == 0) {
+        if (prevSec != nullptr && prevSec->name.starts_with(".text")) {
             // A NOBITS section (e.g. .nv.shared.<kernel>) occupies no file bytes at all (see the
             // `!isNobits` guard below), so forcing the preceding .text section to pad up to a
             // 128-byte file offset here serves no purpose: nvcc's real cubins never do it, and
@@ -1606,7 +1605,7 @@ void CuAsmParser::Impl::dirSection(const std::vector<std::string>& args) {
 
     mSectionDict[secname] = std::move(newSection);
 
-    if (args[0].rfind(".text.", 0) == 0) {
+    if (args[0].starts_with(".text.")) {
         mInTextSection = true;
         mInsIndex = 0;
     } else {
@@ -1818,7 +1817,7 @@ std::pair<std::int64_t, bool> CuAsmParser::Impl::evalVar(const std::string& var)
     }
 
     static const std::string srelSuffix = "@srel";
-    if (var.size() > srelSuffix.size() && var.compare(var.size() - srelSuffix.size(), srelSuffix.size(), srelSuffix) == 0) {
+    if (var.size() > srelSuffix.size() && var.ends_with(srelSuffix)) {
         std::string label = var.substr(0, var.size() - srelSuffix.size());
         if (!mLabelDict.contains(label)) {
             throw std::runtime_error("Unknown expression " + var);
@@ -1834,7 +1833,7 @@ std::pair<std::int64_t, bool> CuAsmParser::Impl::evalVar(const std::string& var)
 }
 
 ExprResult CuAsmParser::Impl::evalExpr(const std::string& expr) {
-    if (expr.rfind("index@", 0) == 0) {
+    if (expr.starts_with("index@")) {
         std::string symname = stripChars(expr.substr(6), " ()");
         auto index = getSymbolIdx(symname);
         doAssert(index.has_value(), "Unknown symbol \"" + symname + "\"!!!");
@@ -1985,15 +1984,21 @@ void CuAsmParser::Impl::updateSectionForFixup(CuAsmFixup& fixup) {
 
 void CuAsmParser::Impl::emitBytes(const std::string& bs) { mCurrSection->emitBytes(bs); }
 
-CuAsmParser::Impl::LineType CuAsmParser::Impl::getLineType(const std::string& line) {
+CuAsmParser::Impl::LineType CuAsmParser::Impl::getLineType(const std::string& line, std::smatch* outMatch) {
     std::smatch m;
     if (line.empty()) {
         return LineType::Blank;
     }
     if (matchAtStart(line, mLabelPattern, m)) {
+        if (outMatch != nullptr) {
+            *outMatch = m;
+        }
         return LineType::Label;
     }
     if (matchAtStart(line, mDirectivePattern, m)) {
+        if (outMatch != nullptr) {
+            *outMatch = m;
+        }
         return LineType::Directive;
     }
     if (mInTextSection) {
@@ -2007,7 +2012,7 @@ void CuAsmParser::Impl::emitTypedBytes(const std::string& dtype, const std::vect
     int dsize = dtypeSize.at(dtype);
 
     for (const auto& arg : args) {
-        if (arg.rfind("0x", 0) == 0) {
+        if (arg.starts_with("0x")) {
             std::uint64_t argv = parsePyUInt(arg, 16);
             try {
                 emitBytes(packUnsignedLE(argv, dsize));
@@ -2023,7 +2028,7 @@ void CuAsmParser::Impl::emitTypedBytes(const std::string& dtype, const std::vect
 }
 
 std::string CuAsmParser::Impl::genSectionPaddingBytes(CuAsmSection& sec, std::uint64_t padSize) {
-    std::string padbytes = sec.name.rfind(".text", 0) == 0 ? mArch->getPadBytes() : std::string(1, '\0');
+    std::string padbytes = sec.name.starts_with(".text") ? mArch->getPadBytes() : std::string(1, '\0');
     if (padbytes.empty() || padSize % padbytes.size() != 0) {
         throw std::runtime_error("Invalid padding size for section " + sec.name);
     }
@@ -2042,7 +2047,7 @@ std::pair<std::uint64_t, std::uint64_t> CuAsmParser::Impl::updateSectionPadding(
         return {fileOffset, memOffset};
     }
 
-    if (sec->name.rfind(".text", 0) == 0) {
+    if (sec->name.starts_with(".text")) {
         align = std::max(align, sec->addralign);
         auto [newFileOffset, fpadsize] = alignTo(fileOffset, align);
         auto [newMemOffset, mpadsize] = alignTo(memOffset, align);
@@ -2079,11 +2084,11 @@ std::pair<std::uint64_t, std::uint64_t> CuAsmParser::Impl::updateSectionPadding(
 }
 
 std::string CuAsmParser::Impl::checkNVInfoOffsetLabels(CuAsmSection* section, const std::string& labelname, std::uint64_t offset) {
-    if (labelname.rfind(".CUASM_OFFSET_LABEL", 0) != 0) {
+    if (!labelname.starts_with(".CUASM_OFFSET_LABEL")) {
         return labelname;
     }
 
-    doAssert(section != nullptr && section->name.rfind(".text", 0) == 0, "CUASM_OFFSET_LABEL should be defined in a text section!");
+    doAssert(section != nullptr && section->name.starts_with(".text"), "CUASM_OFFSET_LABEL should be defined in a text section!");
 
     std::string kname = section->name.substr(6);
     std::vector<std::string> vs = splitOn(labelname.substr(1), '.');

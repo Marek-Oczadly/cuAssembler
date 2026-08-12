@@ -708,7 +708,6 @@ void iterProcessFilesFromBinFiles(const std::vector<std::string>& fpatternList, 
                 }
             } catch (const std::exception& e) {
                 CuAsmLogger::logError(e.what());
-                CuAsmLogger::logError(e.what());
                 continue;
             }
         }
