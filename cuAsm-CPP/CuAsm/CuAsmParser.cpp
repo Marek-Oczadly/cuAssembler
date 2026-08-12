@@ -233,6 +233,58 @@ bool isHeaderTypeNamed(const HeaderValue& v, const std::string& name) {
     return std::holds_alternative<std::string>(v) && std::get<std::string>(v) == name;
 }
 
+/// Fixed-schema replacement for what used to be a runtime string-keyed
+/// std::map<std::string, HeaderValue>: every field here corresponds 1:1 to a `.__section_<name>`
+/// directive registered in buildDirDict(), which is the only way this header gets populated -- the
+/// set of names is closed, so there's no need for a dict's open-ended string keying.
+struct SectionHeaderFields {
+    std::optional<HeaderValue> name;
+    std::optional<HeaderValue> type;
+    std::optional<HeaderValue> flags;
+    std::optional<HeaderValue> addr;
+    std::optional<HeaderValue> offset;
+    std::optional<HeaderValue> size;
+    std::optional<HeaderValue> link;
+    std::optional<HeaderValue> info;
+    std::optional<HeaderValue> entsize;
+    std::optional<HeaderValue> addralign;
+};
+
+/// Fixed-schema replacement for the `.__segment_*`-populated header dict. startsection/endsection
+/// aren't real ELFIO::Elf64_Phdr fields -- they're only used internally by layoutSections() to look
+/// up the file/memory span of a named section range before resolving offset/filesz/memsz.
+struct SegmentHeaderFields {
+    std::optional<HeaderValue> type;
+    std::optional<HeaderValue> flags;
+    std::optional<HeaderValue> offset;
+    std::optional<HeaderValue> vaddr;
+    std::optional<HeaderValue> paddr;
+    std::optional<HeaderValue> filesz;
+    std::optional<HeaderValue> memsz;
+    std::optional<HeaderValue> align;
+    std::optional<HeaderValue> startsection;
+    std::optional<HeaderValue> endsection;
+};
+
+/// Fixed-schema replacement for the `.__elf_*`-populated header dict.
+struct FileHeaderFields {
+    std::optional<HeaderValue> identOsabi;
+    std::optional<HeaderValue> identAbiversion;
+    std::optional<HeaderValue> type;
+    std::optional<HeaderValue> machine;
+    std::optional<HeaderValue> version;
+    std::optional<HeaderValue> entry;
+    std::optional<HeaderValue> phoff;
+    std::optional<HeaderValue> shoff;
+    std::optional<HeaderValue> flags;
+    std::optional<HeaderValue> ehsize;
+    std::optional<HeaderValue> phentsize;
+    std::optional<HeaderValue> phnum;
+    std::optional<HeaderValue> shentsize;
+    std::optional<HeaderValue> shnum;
+    std::optional<HeaderValue> shstrndx;
+};
+
 /** @brief Builds the string-keyed dict of NUL-terminated strings within a strtab/shstrtab section. */
 std::map<std::uint32_t, std::string> buildStringDict(const std::string& bytelist) {
     std::map<std::uint32_t, std::string> sdict;
@@ -359,26 +411,18 @@ public:
 
     /** @brief Merges header overrides into the concrete section-header struct, mirroring updateHeader. */
     void updateHeader() {
-        for (const auto& [attr, val] : header) {
-            std::int64_t iv;
-            try {
-                iv = resolveHeaderInt(val);
-            } catch (...) {
-                continue;
-            }
-            if (attr == "name") sectionHeader.sh_name = static_cast<ELFIO::Elf_Word>(iv);
-            else if (attr == "type") sectionHeader.sh_type = static_cast<ELFIO::Elf_Word>(iv);
-            else if (attr == "flags") sectionHeader.sh_flags = static_cast<ELFIO::Elf_Xword>(iv);
-            else if (attr == "addr") sectionHeader.sh_addr = static_cast<ELFIO::Elf64_Addr>(iv);
-            else if (attr == "offset") sectionHeader.sh_offset = static_cast<ELFIO::Elf64_Off>(iv);
-            else if (attr == "size") sectionHeader.sh_size = static_cast<ELFIO::Elf_Xword>(iv);
-            else if (attr == "link") sectionHeader.sh_link = static_cast<ELFIO::Elf_Word>(iv);
-            else if (attr == "info") sectionHeader.sh_info = static_cast<ELFIO::Elf_Word>(iv);
-            else if (attr == "entsize") sectionHeader.sh_entsize = static_cast<ELFIO::Elf_Xword>(iv);
-            else if (attr == "addralign") sectionHeader.sh_addralign = static_cast<ELFIO::Elf_Xword>(iv);
-        }
+        if (header.name) sectionHeader.sh_name = static_cast<ELFIO::Elf_Word>(resolveHeaderInt(*header.name));
+        if (header.type) sectionHeader.sh_type = static_cast<ELFIO::Elf_Word>(resolveHeaderInt(*header.type));
+        if (header.flags) sectionHeader.sh_flags = static_cast<ELFIO::Elf_Xword>(resolveHeaderInt(*header.flags));
+        if (header.addr) sectionHeader.sh_addr = static_cast<ELFIO::Elf64_Addr>(resolveHeaderInt(*header.addr));
+        if (header.offset) sectionHeader.sh_offset = static_cast<ELFIO::Elf64_Off>(resolveHeaderInt(*header.offset));
+        if (header.size) sectionHeader.sh_size = static_cast<ELFIO::Elf_Xword>(resolveHeaderInt(*header.size));
+        if (header.link) sectionHeader.sh_link = static_cast<ELFIO::Elf_Word>(resolveHeaderInt(*header.link));
+        if (header.info) sectionHeader.sh_info = static_cast<ELFIO::Elf_Word>(resolveHeaderInt(*header.info));
+        if (header.entsize) sectionHeader.sh_entsize = static_cast<ELFIO::Elf_Xword>(resolveHeaderInt(*header.entsize));
+        if (header.addralign) sectionHeader.sh_addralign = static_cast<ELFIO::Elf_Xword>(resolveHeaderInt(*header.addralign));
 
-        if (header.count("type") && isHeaderTypeNamed(header.at("type"), "SHT_NULL")) {
+        if (header.type && isHeaderTypeNamed(*header.type, "SHT_NULL")) {
             sectionHeader.sh_offset = 0;
         } else {
             sectionHeader.sh_offset = offset;
@@ -420,15 +464,15 @@ public:
             throw std::runtime_error("Invalid register number " + std::to_string(*regnum) + " for section " + name + "!");
         }
 
-        std::int64_t rinfo = resolveHeaderInt(header.at("info"));
-        header["info"] = (rinfo & 0x00ffffffLL) + (static_cast<std::int64_t>(*regnum) << 24);
+        std::int64_t rinfo = resolveHeaderInt(header.info.value());
+        header.info = (rinfo & 0x00ffffffLL) + (static_cast<std::int64_t>(*regnum) << 24);
         extra["regnum"] = *regnum;
 
         if (barnum > 15) {
             throw std::runtime_error("Invalid barrier number " + std::to_string(barnum) + " for section " + name + "!");
         }
-        std::int64_t rflag = resolveHeaderInt(header.at("flags"));
-        header["flags"] = (rflag & 0xff0fffffLL) + (static_cast<std::int64_t>(barnum) << 20);
+        std::int64_t rflag = resolveHeaderInt(header.flags.value());
+        header.flags = (rflag & 0xff0fffffLL) + (static_cast<std::int64_t>(barnum) << 20);
         extra["barnum"] = barnum;
     }
 
@@ -472,7 +516,7 @@ public:
         std::uint64_t pos = tell();
         if (pos == 0) {
             addralign = static_cast<std::uint64_t>(align);
-            header["addralign"] = static_cast<std::int64_t>(align);
+            header.addralign = static_cast<std::int64_t>(align);
         } else {
             auto [ppos, padsz] = alignTo(pos, static_cast<std::uint64_t>(align));
             (void)padsz;
@@ -509,7 +553,7 @@ public:
 
     /** @brief Writes this section's data (and padding) to a stream, mirroring writePaddedData. */
     void writePaddedData(std::ostream& os) const {
-        if (header.count("type") && isHeaderTypeNamed(header.at("type"), "SHT_NOBITS")) {
+        if (header.type && isHeaderTypeNamed(*header.type, "SHT_NOBITS")) {
             return;
         }
         os.write(m_data.data(), static_cast<std::streamsize>(m_data.size()));
@@ -541,7 +585,7 @@ public:
     std::uint64_t addralign = 0;
     std::uint64_t entsize = 0;
 
-    std::map<std::string, HeaderValue> header;
+    SectionHeaderFields header;
     std::map<std::string, int> extra;
 
     std::uint64_t padsize = 0;
@@ -636,28 +680,20 @@ public:
      * @param pFlags Segment flags text (numeric).
      **/
     CuAsmSegment(std::string pType, std::string pFlags) : segmentHeader(Config::defaultSegmentHeader()) {
-        header["type"] = HeaderValue(std::move(pType));
-        header["flags"] = HeaderValue(std::move(pFlags));
+        header.type = HeaderValue(std::move(pType));
+        header.flags = HeaderValue(std::move(pFlags));
     }
 
     /** @brief Merges header overrides into the concrete segment-header struct. */
     void updateHeader() {
-        for (const auto& [attr, val] : header) {
-            std::int64_t iv;
-            try {
-                iv = resolveHeaderInt(val);
-            } catch (...) {
-                continue;
-            }
-            if (attr == "type") segmentHeader.p_type = static_cast<ELFIO::Elf_Word>(iv);
-            else if (attr == "flags") segmentHeader.p_flags = static_cast<ELFIO::Elf_Word>(iv);
-            else if (attr == "offset") segmentHeader.p_offset = static_cast<ELFIO::Elf64_Off>(iv);
-            else if (attr == "vaddr") segmentHeader.p_vaddr = static_cast<ELFIO::Elf64_Addr>(iv);
-            else if (attr == "paddr") segmentHeader.p_paddr = static_cast<ELFIO::Elf64_Addr>(iv);
-            else if (attr == "filesz") segmentHeader.p_filesz = static_cast<ELFIO::Elf_Xword>(iv);
-            else if (attr == "memsz") segmentHeader.p_memsz = static_cast<ELFIO::Elf_Xword>(iv);
-            else if (attr == "align") segmentHeader.p_align = static_cast<ELFIO::Elf_Xword>(iv);
-        }
+        if (header.type) segmentHeader.p_type = static_cast<ELFIO::Elf_Word>(resolveHeaderInt(*header.type));
+        if (header.flags) segmentHeader.p_flags = static_cast<ELFIO::Elf_Word>(resolveHeaderInt(*header.flags));
+        if (header.offset) segmentHeader.p_offset = static_cast<ELFIO::Elf64_Off>(resolveHeaderInt(*header.offset));
+        if (header.vaddr) segmentHeader.p_vaddr = static_cast<ELFIO::Elf64_Addr>(resolveHeaderInt(*header.vaddr));
+        if (header.paddr) segmentHeader.p_paddr = static_cast<ELFIO::Elf64_Addr>(resolveHeaderInt(*header.paddr));
+        if (header.filesz) segmentHeader.p_filesz = static_cast<ELFIO::Elf_Xword>(resolveHeaderInt(*header.filesz));
+        if (header.memsz) segmentHeader.p_memsz = static_cast<ELFIO::Elf_Xword>(resolveHeaderInt(*header.memsz));
+        if (header.align) segmentHeader.p_align = static_cast<ELFIO::Elf_Xword>(resolveHeaderInt(*header.align));
     }
 
     /** @brief Gets the concrete segment-header struct. @return The struct. */
@@ -670,7 +706,7 @@ public:
         return bytes;
     }
 
-    std::map<std::string, HeaderValue> header;
+    SegmentHeaderFields header;
 
 private:
     ELFIO::Elf64_Phdr segmentHeader;
@@ -759,21 +795,21 @@ public:
 
     /** @brief Builds the ELF file header bytes from fileHeader, mirroring buildFileHeader. @return The header bytes. */
     std::string buildFileHeader() {
-        fileHeaderStruct.e_ident[ELFIO::EI_OSABI] = static_cast<unsigned char>(resolveHeaderInt(fileHeader.at("ident_osabi")));
-        fileHeaderStruct.e_ident[ELFIO::EI_ABIVERSION] = static_cast<unsigned char>(resolveHeaderInt(fileHeader.at("ident_abiversion")));
-        fileHeaderStruct.e_type = static_cast<ELFIO::Elf_Half>(resolveHeaderInt(fileHeader.at("type")));
-        fileHeaderStruct.e_machine = static_cast<ELFIO::Elf_Half>(resolveHeaderInt(fileHeader.at("machine")));
-        fileHeaderStruct.e_version = static_cast<ELFIO::Elf_Word>(resolveHeaderInt(fileHeader.at("version")));
-        fileHeaderStruct.e_entry = static_cast<ELFIO::Elf64_Addr>(resolveHeaderInt(fileHeader.at("entry")));
-        fileHeaderStruct.e_phoff = static_cast<ELFIO::Elf64_Off>(resolveHeaderInt(fileHeader.at("phoff")));
-        fileHeaderStruct.e_shoff = static_cast<ELFIO::Elf64_Off>(resolveHeaderInt(fileHeader.at("shoff")));
-        fileHeaderStruct.e_flags = static_cast<ELFIO::Elf_Word>(resolveHeaderInt(fileHeader.at("flags")));
-        fileHeaderStruct.e_ehsize = static_cast<ELFIO::Elf_Half>(resolveHeaderInt(fileHeader.at("ehsize")));
-        fileHeaderStruct.e_phentsize = static_cast<ELFIO::Elf_Half>(resolveHeaderInt(fileHeader.at("phentsize")));
-        fileHeaderStruct.e_phnum = static_cast<ELFIO::Elf_Half>(resolveHeaderInt(fileHeader.at("phnum")));
-        fileHeaderStruct.e_shentsize = static_cast<ELFIO::Elf_Half>(resolveHeaderInt(fileHeader.at("shentsize")));
-        fileHeaderStruct.e_shnum = static_cast<ELFIO::Elf_Half>(resolveHeaderInt(fileHeader.at("shnum")));
-        fileHeaderStruct.e_shstrndx = static_cast<ELFIO::Elf_Half>(resolveHeaderInt(fileHeader.at("shstrndx")));
+        fileHeaderStruct.e_ident[ELFIO::EI_OSABI] = static_cast<unsigned char>(resolveHeaderInt(fileHeader.identOsabi.value()));
+        fileHeaderStruct.e_ident[ELFIO::EI_ABIVERSION] = static_cast<unsigned char>(resolveHeaderInt(fileHeader.identAbiversion.value()));
+        fileHeaderStruct.e_type = static_cast<ELFIO::Elf_Half>(resolveHeaderInt(fileHeader.type.value()));
+        fileHeaderStruct.e_machine = static_cast<ELFIO::Elf_Half>(resolveHeaderInt(fileHeader.machine.value()));
+        fileHeaderStruct.e_version = static_cast<ELFIO::Elf_Word>(resolveHeaderInt(fileHeader.version.value()));
+        fileHeaderStruct.e_entry = static_cast<ELFIO::Elf64_Addr>(resolveHeaderInt(fileHeader.entry.value()));
+        fileHeaderStruct.e_phoff = static_cast<ELFIO::Elf64_Off>(resolveHeaderInt(fileHeader.phoff.value()));
+        fileHeaderStruct.e_shoff = static_cast<ELFIO::Elf64_Off>(resolveHeaderInt(fileHeader.shoff.value()));
+        fileHeaderStruct.e_flags = static_cast<ELFIO::Elf_Word>(resolveHeaderInt(fileHeader.flags.value()));
+        fileHeaderStruct.e_ehsize = static_cast<ELFIO::Elf_Half>(resolveHeaderInt(fileHeader.ehsize.value()));
+        fileHeaderStruct.e_phentsize = static_cast<ELFIO::Elf_Half>(resolveHeaderInt(fileHeader.phentsize.value()));
+        fileHeaderStruct.e_phnum = static_cast<ELFIO::Elf_Half>(resolveHeaderInt(fileHeader.phnum.value()));
+        fileHeaderStruct.e_shentsize = static_cast<ELFIO::Elf_Half>(resolveHeaderInt(fileHeader.shentsize.value()));
+        fileHeaderStruct.e_shnum = static_cast<ELFIO::Elf_Half>(resolveHeaderInt(fileHeader.shnum.value()));
+        fileHeaderStruct.e_shstrndx = static_cast<ELFIO::Elf_Half>(resolveHeaderInt(fileHeader.shstrndx.value()));
 
         std::string bytes(sizeof(ELFIO::Elf64_Ehdr), '\0');
         std::memcpy(bytes.data(), &fileHeaderStruct, sizeof(fileHeaderStruct));
@@ -783,7 +819,7 @@ public:
     /** @brief Gets the concrete ELF file-header struct. @return The struct. */
     const ELFIO::Elf64_Ehdr& getFileHeaderStruct() const { return fileHeaderStruct; }
 
-    std::map<std::string, HeaderValue> fileHeader;
+    FileHeaderFields fileHeader;
     std::optional<std::string> headerflags;
     std::optional<std::string> elftype;
 
@@ -903,10 +939,9 @@ struct CuAsmParser::Impl {
     void dirWeak(const std::vector<std::string>& args);
     void dirZero(const std::vector<std::string>& args);
     void dirOther(const std::vector<std::string>& args);
-    void dirElfheader(const std::string& attrname, const std::vector<std::string>& args);
-    void dirSectionheader(const std::string& attrname, const std::vector<std::string>& args);
+    void setHeaderField(std::optional<HeaderValue>& field, const std::string& dirName, const std::vector<std::string>& args);
+    void dirElfheaderFlags(const std::vector<std::string>& args);
     void dirSegment(const std::vector<std::string>& args);
-    void dirSegmentheader(const std::string& attrname, const std::vector<std::string>& args);
 
     // ---- subroutines ----
 
@@ -990,41 +1025,41 @@ void CuAsmParser::Impl::buildDirDict() {
     mDirDict[".zero"] = [this](const std::vector<std::string>& a) { dirZero(a); };
     mDirDict[".other"] = [this](const std::vector<std::string>& a) { dirOther(a); };
 
-    mDirDict[".__elf_ident_osabi"] = [this](const std::vector<std::string>& a) { dirElfheader("ident_osabi", a); };
-    mDirDict[".__elf_ident_abiversion"] = [this](const std::vector<std::string>& a) { dirElfheader("ident_abiversion", a); };
-    mDirDict[".__elf_type"] = [this](const std::vector<std::string>& a) { dirElfheader("type", a); };
-    mDirDict[".__elf_machine"] = [this](const std::vector<std::string>& a) { dirElfheader("machine", a); };
-    mDirDict[".__elf_version"] = [this](const std::vector<std::string>& a) { dirElfheader("version", a); };
-    mDirDict[".__elf_entry"] = [this](const std::vector<std::string>& a) { dirElfheader("entry", a); };
-    mDirDict[".__elf_phoff"] = [this](const std::vector<std::string>& a) { dirElfheader("phoff", a); };
-    mDirDict[".__elf_shoff"] = [this](const std::vector<std::string>& a) { dirElfheader("shoff", a); };
-    mDirDict[".__elf_flags"] = [this](const std::vector<std::string>& a) { dirElfheader("flags", a); };
-    mDirDict[".__elf_ehsize"] = [this](const std::vector<std::string>& a) { dirElfheader("ehsize", a); };
-    mDirDict[".__elf_phentsize"] = [this](const std::vector<std::string>& a) { dirElfheader("phentsize", a); };
-    mDirDict[".__elf_phnum"] = [this](const std::vector<std::string>& a) { dirElfheader("phnum", a); };
-    mDirDict[".__elf_shentsize"] = [this](const std::vector<std::string>& a) { dirElfheader("shentsize", a); };
-    mDirDict[".__elf_shnum"] = [this](const std::vector<std::string>& a) { dirElfheader("shnum", a); };
-    mDirDict[".__elf_shstrndx"] = [this](const std::vector<std::string>& a) { dirElfheader("shstrndx", a); };
+    mDirDict[".__elf_ident_osabi"] = [this](const std::vector<std::string>& a) { setHeaderField(mCuAsmFile.fileHeader.identOsabi, ".__elf_ident_osabi", a); };
+    mDirDict[".__elf_ident_abiversion"] = [this](const std::vector<std::string>& a) { setHeaderField(mCuAsmFile.fileHeader.identAbiversion, ".__elf_ident_abiversion", a); };
+    mDirDict[".__elf_type"] = [this](const std::vector<std::string>& a) { setHeaderField(mCuAsmFile.fileHeader.type, ".__elf_type", a); };
+    mDirDict[".__elf_machine"] = [this](const std::vector<std::string>& a) { setHeaderField(mCuAsmFile.fileHeader.machine, ".__elf_machine", a); };
+    mDirDict[".__elf_version"] = [this](const std::vector<std::string>& a) { setHeaderField(mCuAsmFile.fileHeader.version, ".__elf_version", a); };
+    mDirDict[".__elf_entry"] = [this](const std::vector<std::string>& a) { setHeaderField(mCuAsmFile.fileHeader.entry, ".__elf_entry", a); };
+    mDirDict[".__elf_phoff"] = [this](const std::vector<std::string>& a) { setHeaderField(mCuAsmFile.fileHeader.phoff, ".__elf_phoff", a); };
+    mDirDict[".__elf_shoff"] = [this](const std::vector<std::string>& a) { setHeaderField(mCuAsmFile.fileHeader.shoff, ".__elf_shoff", a); };
+    mDirDict[".__elf_flags"] = [this](const std::vector<std::string>& a) { dirElfheaderFlags(a); };
+    mDirDict[".__elf_ehsize"] = [this](const std::vector<std::string>& a) { setHeaderField(mCuAsmFile.fileHeader.ehsize, ".__elf_ehsize", a); };
+    mDirDict[".__elf_phentsize"] = [this](const std::vector<std::string>& a) { setHeaderField(mCuAsmFile.fileHeader.phentsize, ".__elf_phentsize", a); };
+    mDirDict[".__elf_phnum"] = [this](const std::vector<std::string>& a) { setHeaderField(mCuAsmFile.fileHeader.phnum, ".__elf_phnum", a); };
+    mDirDict[".__elf_shentsize"] = [this](const std::vector<std::string>& a) { setHeaderField(mCuAsmFile.fileHeader.shentsize, ".__elf_shentsize", a); };
+    mDirDict[".__elf_shnum"] = [this](const std::vector<std::string>& a) { setHeaderField(mCuAsmFile.fileHeader.shnum, ".__elf_shnum", a); };
+    mDirDict[".__elf_shstrndx"] = [this](const std::vector<std::string>& a) { setHeaderField(mCuAsmFile.fileHeader.shstrndx, ".__elf_shstrndx", a); };
 
-    mDirDict[".__section_name"] = [this](const std::vector<std::string>& a) { dirSectionheader("name", a); };
-    mDirDict[".__section_type"] = [this](const std::vector<std::string>& a) { dirSectionheader("type", a); };
-    mDirDict[".__section_flags"] = [this](const std::vector<std::string>& a) { dirSectionheader("flags", a); };
-    mDirDict[".__section_addr"] = [this](const std::vector<std::string>& a) { dirSectionheader("addr", a); };
-    mDirDict[".__section_offset"] = [this](const std::vector<std::string>& a) { dirSectionheader("offset", a); };
-    mDirDict[".__section_size"] = [this](const std::vector<std::string>& a) { dirSectionheader("size", a); };
-    mDirDict[".__section_link"] = [this](const std::vector<std::string>& a) { dirSectionheader("link", a); };
-    mDirDict[".__section_info"] = [this](const std::vector<std::string>& a) { dirSectionheader("info", a); };
-    mDirDict[".__section_entsize"] = [this](const std::vector<std::string>& a) { dirSectionheader("entsize", a); };
+    mDirDict[".__section_name"] = [this](const std::vector<std::string>& a) { setHeaderField(mCurrSection->header.name, ".__section_name", a); };
+    mDirDict[".__section_type"] = [this](const std::vector<std::string>& a) { setHeaderField(mCurrSection->header.type, ".__section_type", a); };
+    mDirDict[".__section_flags"] = [this](const std::vector<std::string>& a) { setHeaderField(mCurrSection->header.flags, ".__section_flags", a); };
+    mDirDict[".__section_addr"] = [this](const std::vector<std::string>& a) { setHeaderField(mCurrSection->header.addr, ".__section_addr", a); };
+    mDirDict[".__section_offset"] = [this](const std::vector<std::string>& a) { setHeaderField(mCurrSection->header.offset, ".__section_offset", a); };
+    mDirDict[".__section_size"] = [this](const std::vector<std::string>& a) { setHeaderField(mCurrSection->header.size, ".__section_size", a); };
+    mDirDict[".__section_link"] = [this](const std::vector<std::string>& a) { setHeaderField(mCurrSection->header.link, ".__section_link", a); };
+    mDirDict[".__section_info"] = [this](const std::vector<std::string>& a) { setHeaderField(mCurrSection->header.info, ".__section_info", a); };
+    mDirDict[".__section_entsize"] = [this](const std::vector<std::string>& a) { setHeaderField(mCurrSection->header.entsize, ".__section_entsize", a); };
 
     mDirDict[".__segment"] = [this](const std::vector<std::string>& a) { dirSegment(a); };
-    mDirDict[".__segment_offset"] = [this](const std::vector<std::string>& a) { dirSegmentheader("offset", a); };
-    mDirDict[".__segment_vaddr"] = [this](const std::vector<std::string>& a) { dirSegmentheader("vaddr", a); };
-    mDirDict[".__segment_paddr"] = [this](const std::vector<std::string>& a) { dirSegmentheader("paddr", a); };
-    mDirDict[".__segment_filesz"] = [this](const std::vector<std::string>& a) { dirSegmentheader("filesz", a); };
-    mDirDict[".__segment_memsz"] = [this](const std::vector<std::string>& a) { dirSegmentheader("memsz", a); };
-    mDirDict[".__segment_align"] = [this](const std::vector<std::string>& a) { dirSegmentheader("align", a); };
-    mDirDict[".__segment_startsection"] = [this](const std::vector<std::string>& a) { dirSegmentheader("startsection", a); };
-    mDirDict[".__segment_endsection"] = [this](const std::vector<std::string>& a) { dirSegmentheader("endsection", a); };
+    mDirDict[".__segment_offset"] = [this](const std::vector<std::string>& a) { setHeaderField(mCurrSegment->header.offset, ".__segment_offset", a); };
+    mDirDict[".__segment_vaddr"] = [this](const std::vector<std::string>& a) { setHeaderField(mCurrSegment->header.vaddr, ".__segment_vaddr", a); };
+    mDirDict[".__segment_paddr"] = [this](const std::vector<std::string>& a) { setHeaderField(mCurrSegment->header.paddr, ".__segment_paddr", a); };
+    mDirDict[".__segment_filesz"] = [this](const std::vector<std::string>& a) { setHeaderField(mCurrSegment->header.filesz, ".__segment_filesz", a); };
+    mDirDict[".__segment_memsz"] = [this](const std::vector<std::string>& a) { setHeaderField(mCurrSegment->header.memsz, ".__segment_memsz", a); };
+    mDirDict[".__segment_align"] = [this](const std::vector<std::string>& a) { setHeaderField(mCurrSegment->header.align, ".__segment_align", a); };
+    mDirDict[".__segment_startsection"] = [this](const std::vector<std::string>& a) { setHeaderField(mCurrSegment->header.startsection, ".__segment_startsection", a); };
+    mDirDict[".__segment_endsection"] = [this](const std::vector<std::string>& a) { setHeaderField(mCurrSegment->header.endsection, ".__segment_endsection", a); };
 }
 
 void CuAsmParser::Impl::reset() {
@@ -1488,7 +1523,7 @@ void CuAsmParser::Impl::layoutSections() {
             // 128-byte file offset here serves no purpose: nvcc's real cubins never do it, and
             // it silently injects extra trailing NOP instructions into .text whenever the actual
             // offset doesn't already happen to land on a 128-byte boundary.
-            bool nextIsNobits = sec.header.count("type") && isHeaderTypeNamed(sec.header.at("type"), "SHT_NOBITS");
+            bool nextIsNobits = sec.header.type && isHeaderTypeNamed(*sec.header.type, "SHT_NOBITS");
             if (!nextIsNobits) {
                 align = 128;
             }
@@ -1500,14 +1535,14 @@ void CuAsmParser::Impl::layoutSections() {
         sec.size = sec.getDataSize();
         sec.offset = fileOffset;
 
-        sec.header["size"] = static_cast<std::int64_t>(sec.size);
-        sec.header["offset"] = static_cast<std::int64_t>(sec.offset);
+        sec.header.size = static_cast<std::int64_t>(sec.size);
+        sec.header.offset = static_cast<std::int64_t>(sec.offset);
 
         prevSec = &sec;
         shEdges[secname] = Edge{fileOffset, 0, memOffset, 0};
 
         memOffset += sec.size;
-        bool isNobits = sec.header.count("type") && isHeaderTypeNamed(sec.header.at("type"), "SHT_NOBITS");
+        bool isNobits = sec.header.type && isHeaderTypeNamed(*sec.header.type, "SHT_NOBITS");
         if (!isNobits) {
             fileOffset += sec.size;
         }
@@ -1525,9 +1560,9 @@ void CuAsmParser::Impl::layoutSections() {
         CuAsmSection& sec = *secPtr;
 
         sec.size = sec.getDataSize();
-        sec.header["size"] = static_cast<std::int64_t>(sec.size);
+        sec.header.size = static_cast<std::int64_t>(sec.size);
 
-        bool isNobits = sec.header.count("type") && isHeaderTypeNamed(sec.header.at("type"), "SHT_NOBITS");
+        bool isNobits = sec.header.type && isHeaderTypeNamed(*sec.header.type, "SHT_NOBITS");
         std::uint64_t fsize = isNobits ? 0 : sec.size;
         std::uint64_t msize = sec.size;
 
@@ -1542,35 +1577,35 @@ void CuAsmParser::Impl::layoutSections() {
 
     std::uint64_t secHeaderLen = mSectionDict.size() * sizeof(ELFIO::Elf64_Shdr);
 
-    mCuAsmFile.fileHeader["shoff"] = static_cast<std::int64_t>(fileOffset);
+    mCuAsmFile.fileHeader.shoff = static_cast<std::int64_t>(fileOffset);
 
     std::uint64_t phoff = fileOffset + secHeaderLen;
-    std::int64_t phentsize = resolveHeaderInt(mCuAsmFile.fileHeader.at("phentsize"));
-    std::int64_t phnum = resolveHeaderInt(mCuAsmFile.fileHeader.at("phnum"));
+    std::int64_t phentsize = resolveHeaderInt(mCuAsmFile.fileHeader.phentsize.value());
+    std::int64_t phnum = resolveHeaderInt(mCuAsmFile.fileHeader.phnum.value());
     std::uint64_t phlen = static_cast<std::uint64_t>(phentsize * phnum);
-    mCuAsmFile.fileHeader["phoff"] = static_cast<std::int64_t>(phoff);
+    mCuAsmFile.fileHeader.phoff = static_cast<std::int64_t>(phoff);
 
     shEdges[PROGRAM_HEADER_TAG] = Edge{phoff, phoff + phlen, phoff, phoff + phlen};
 
     for (auto& segPtr : mSegmentList) {
         CuAsmSegment& seg = *segPtr;
-        std::string segType = std::get<std::string>(seg.header.at("type"));
+        std::string segType = std::get<std::string>(seg.header.type.value());
 
         if (segType == "PT_PHDR") {
-            seg.header["offset"] = static_cast<std::int64_t>(fileOffset + secHeaderLen);
+            seg.header.offset = static_cast<std::int64_t>(fileOffset + secHeaderLen);
             std::int64_t filesz = static_cast<std::int64_t>(sizeof(ELFIO::Elf64_Phdr) * mSegmentList.size());
-            seg.header["filesz"] = filesz;
-            seg.header["memsz"] = filesz;
+            seg.header.filesz = filesz;
+            seg.header.memsz = filesz;
         } else if (segType == "PT_LOAD") {
-            std::string startsection = std::get<std::string>(seg.header.at("startsection"));
-            std::string endsection = std::get<std::string>(seg.header.at("endsection"));
+            std::string startsection = std::get<std::string>(seg.header.startsection.value());
+            std::string endsection = std::get<std::string>(seg.header.endsection.value());
             if (!startsection.empty() && !endsection.empty()) {
                 const Edge& e0 = shEdges.at(startsection);
                 const Edge& e1 = shEdges.at(endsection);
 
-                seg.header["offset"] = static_cast<std::int64_t>(e0.fileStart);
-                seg.header["filesz"] = static_cast<std::int64_t>(e1.fileEnd - e0.fileStart);
-                seg.header["memsz"] = static_cast<std::int64_t>(e1.memEnd - e0.memStart);
+                seg.header.offset = static_cast<std::int64_t>(e0.fileStart);
+                seg.header.filesz = static_cast<std::int64_t>(e1.fileEnd - e0.fileStart);
+                seg.header.memsz = static_cast<std::int64_t>(e1.memEnd - e0.memStart);
             }
         } else {
             std::string msg = "Unknown segment type " + segType + "!";
@@ -1727,26 +1762,23 @@ void CuAsmParser::Impl::dirOther(const std::vector<std::string>& args) {
     mSymbolDict.at(symbol)->other = args[1];
 }
 
-void CuAsmParser::Impl::dirElfheader(const std::string& attrname, const std::vector<std::string>& args) {
-    assertArgc(".__elf_" + attrname, args, 1, false);
-    mCuAsmFile.fileHeader[attrname] = cvtValue(args[0]);
-
-    if (attrname == "flags") {
-        std::int64_t flags = parsePyInt(args[0], 16);
-        int smversion = static_cast<int>(flags & 0xff);
-        mArch = std::make_unique<CuSMVersion>(smversion);
-
-        if (!mCuInsAsmRepos || mCuInsAsmRepos->getSMVersion() != *mArch) {
-            CuAsmLogger::logSubroutine("Setting CuInsAsmRepos to default dict...");
-            mCuInsAsmRepos = std::make_unique<CuInsAssemblerRepos>(*mArch);
-            mCuInsAsmRepos->setToDefaultInsAsmDict();
-        }
-    }
+void CuAsmParser::Impl::setHeaderField(std::optional<HeaderValue>& field, const std::string& dirName, const std::vector<std::string>& args) {
+    assertArgc(dirName, args, 1, false);
+    field = cvtValue(args[0]);
 }
 
-void CuAsmParser::Impl::dirSectionheader(const std::string& attrname, const std::vector<std::string>& args) {
-    assertArgc(".__section_" + attrname, args, 1, false);
-    mCurrSection->header[attrname] = cvtValue(args[0]);
+void CuAsmParser::Impl::dirElfheaderFlags(const std::vector<std::string>& args) {
+    setHeaderField(mCuAsmFile.fileHeader.flags, ".__elf_flags", args);
+
+    std::int64_t flags = parsePyInt(args[0], 16);
+    int smversion = static_cast<int>(flags & 0xff);
+    mArch = std::make_unique<CuSMVersion>(smversion);
+
+    if (!mCuInsAsmRepos || mCuInsAsmRepos->getSMVersion() != *mArch) {
+        CuAsmLogger::logSubroutine("Setting CuInsAsmRepos to default dict...");
+        mCuInsAsmRepos = std::make_unique<CuInsAssemblerRepos>(*mArch);
+        mCuInsAsmRepos->setToDefaultInsAsmDict();
+    }
 }
 
 void CuAsmParser::Impl::dirSegment(const std::vector<std::string>& args) {
@@ -1755,11 +1787,6 @@ void CuAsmParser::Impl::dirSegment(const std::vector<std::string>& args) {
     mCurrSegment = seg.get();
     mSegmentList.push_back(std::move(seg));
     mCurrSection = nullptr;
-}
-
-void CuAsmParser::Impl::dirSegmentheader(const std::string& attrname, const std::vector<std::string>& args) {
-    assertArgc(".__segment_" + attrname, args, 1, false);
-    mCurrSegment->header[attrname] = cvtValue(args[0]);
 }
 
 void CuAsmParser::Impl::doAssert(bool flag, const std::string& msg) {
@@ -2066,7 +2093,7 @@ std::pair<std::uint64_t, std::uint64_t> CuAsmParser::Impl::updateSectionPadding(
         return {newFileOffset, newMemOffset};
     }
 
-    bool isNobits = sec->header.count("type") && isHeaderTypeNamed(sec->header.at("type"), "SHT_NOBITS");
+    bool isNobits = sec->header.type && isHeaderTypeNamed(*sec->header.type, "SHT_NOBITS");
     if (isNobits) {
         auto [newMemOffset, mpadsize] = alignTo(memOffset, align);
         sec->padsize = mpadsize;
@@ -2195,7 +2222,7 @@ void CuAsmParser::Impl::saveCubinCmp(const std::string& cubinName, const std::st
     for (auto& [sname, secPtr] : mSectionDict) {
         fasm << "# Section " << sname << "\n";
         fasm << dumpShdr(secPtr->getHeaderStruct()) << "\n";
-        bool isNobits = secPtr->header.count("type") && resolveHeaderInt(secPtr->header.at("type")) == ELFIO::SHT_NOBITS;
+        bool isNobits = secPtr->header.type && resolveHeaderInt(*secPtr->header.type) == ELFIO::SHT_NOBITS;
         if (!isNobits) {
             fasm << bytes2Asm(secPtr->getData()) << "\n\n";
         } else {
