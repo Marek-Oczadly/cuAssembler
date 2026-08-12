@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <optional>
 #include <ostream>
 #include <string>
@@ -11,6 +12,10 @@
 #include <elfio/elf_types.hpp>
 
 #include "CuSMVersion.hpp"
+
+namespace ELFIO {
+class elfio;
+}
 
 namespace CuAsm {
 
@@ -46,6 +51,13 @@ public:
      * @param cubinName Path to the input cubin file.
      **/
     explicit CubinFile(const std::string& cubinName);
+
+    /**
+     * @brief Destructor, out-of-line because m_ElfReader is held behind a unique_ptr to an
+     *        incomplete type (avoids pulling the full ELFIO API into every CubinFile.hpp
+     *        includer).
+     **/
+    ~CubinFile();
 
     /**
      * @brief Saving current cubin as cuasm file, mirroring CubinFile.saveAsCuAsm.
@@ -142,6 +154,10 @@ private:
     std::map<std::string, CubinElfSection> m_ELFSections;
     /// Decoded program-header (segment) entries, in on-disk order.
     std::vector<CubinElfSegment> m_ELFSegments;
+    /// The ELFIO reader used to load this cubin, kept alive for the object's lifetime so
+    /// writeImplicitSectionAsm can use ELFIO's typed symbol/relocation/string accessors instead
+    /// of re-deriving struct layouts by hand.
+    std::unique_ptr<ELFIO::elfio> m_ElfReader;
 
     /// Generated cuasm output, one entry per line.
     std::vector<std::string> m_AsmLines;

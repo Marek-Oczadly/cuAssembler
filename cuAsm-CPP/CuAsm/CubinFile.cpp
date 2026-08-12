@@ -1,11 +1,8 @@
 #include "CubinFile.hpp"
 
-#include <algorithm>
-#include <cstring>
 #include <filesystem>
 #include <format>
 #include <fstream>
-#include <iterator>
 #include <regex>
 #include <span>
 #include <sstream>
@@ -23,19 +20,6 @@
 namespace CuAsm {
 
 namespace {
-
-/** @brief Reads a NUL-terminated string out of a string table at a given byte offset. */
-std::string readCString(std::span<const std::byte> strtab, std::uint32_t offset) {
-    if (offset >= strtab.size()) {
-        return "";
-    }
-    const auto begin = strtab.begin() + static_cast<std::ptrdiff_t>(offset);
-    const auto end = std::find(begin, strtab.end(), std::byte{0});
-    std::string out;
-    out.reserve(static_cast<std::size_t>(end - begin));
-    std::transform(begin, end, std::back_inserter(out), [](std::byte b) { return static_cast<char>(b); });
-    return out;
-}
 
 /** @brief Maps an ELF e_type value to its symbolic name, mirroring pyelftools' ENUM_E_TYPE. */
 std::string elfTypeName(std::uint16_t type) {
@@ -97,11 +81,14 @@ CubinFile::CubinFile(const std::string& cubinName) : m_CubinName(cubinName) {
     loadCubin(cubinName);
 }
 
+CubinFile::~CubinFile() = default;
+
 void CubinFile::reset() {
     m_ELFFileHeader = ELFIO::Elf64_Ehdr{};
     m_ELFSectionOrder.clear();
     m_ELFSections.clear();
     m_ELFSegments.clear();
+    m_ElfReader.reset();
 
     m_AsmLines.clear();
     m_AsmSectionMarkers.clear();
@@ -124,28 +111,32 @@ void CubinFile::loadCubin(const std::string& binName) {
         std::map<std::uint64_t, std::string> secEndDict;
 
         // Parse the whole cubin (ELF header, section header table, program header table) via
-        // ELFIO's high-level loader instead of hand-rolled struct memcpy's.
-        ELFIO::elfio elfReader;
-        if (!elfReader.load(binName)) {
+        // ELFIO's high-level loader instead of hand-rolled struct memcpy's. Loaded directly into
+        // m_ElfReader (rather than a local later moved into it) because ELFIO's section_impl
+        // objects hold raw, non-owning pointers back to their parent elfio's convertor/translator
+        // members; moving the elfio object leaves every section pointing at the moved-from
+        // object's now-destroyed storage.
+        m_ElfReader = std::make_unique<ELFIO::elfio>();
+        if (!m_ElfReader->load(binName)) {
             throw std::runtime_error("Cannot open or parse cubin file " + binName + " as ELF!");
         }
 
         
-        m_ELFFileHeader.e_ident[ELFIO::EI_OSABI] = elfReader.get_os_abi();
-        m_ELFFileHeader.e_ident[ELFIO::EI_ABIVERSION] = elfReader.get_abi_version();
-        m_ELFFileHeader.e_type = elfReader.get_type();
-        m_ELFFileHeader.e_machine = elfReader.get_machine();
-        m_ELFFileHeader.e_version = elfReader.get_version();
-        m_ELFFileHeader.e_entry = elfReader.get_entry();
-        m_ELFFileHeader.e_phoff = elfReader.get_segments_offset();
-        m_ELFFileHeader.e_shoff = elfReader.get_sections_offset();
-        m_ELFFileHeader.e_flags = elfReader.get_flags();
-        m_ELFFileHeader.e_ehsize = elfReader.get_header_size();
-        m_ELFFileHeader.e_phentsize = elfReader.get_segment_entry_size();
-        m_ELFFileHeader.e_phnum = static_cast<ELFIO::Elf_Half>(elfReader.segments.size());
-        m_ELFFileHeader.e_shentsize = elfReader.get_section_entry_size();
-        m_ELFFileHeader.e_shnum = static_cast<ELFIO::Elf_Half>(elfReader.sections.size());
-        m_ELFFileHeader.e_shstrndx = elfReader.get_section_name_str_index();
+        m_ELFFileHeader.e_ident[ELFIO::EI_OSABI] = m_ElfReader->get_os_abi();
+        m_ELFFileHeader.e_ident[ELFIO::EI_ABIVERSION] = m_ElfReader->get_abi_version();
+        m_ELFFileHeader.e_type = m_ElfReader->get_type();
+        m_ELFFileHeader.e_machine = m_ElfReader->get_machine();
+        m_ELFFileHeader.e_version = m_ElfReader->get_version();
+        m_ELFFileHeader.e_entry = m_ElfReader->get_entry();
+        m_ELFFileHeader.e_phoff = m_ElfReader->get_segments_offset();
+        m_ELFFileHeader.e_shoff = m_ElfReader->get_sections_offset();
+        m_ELFFileHeader.e_flags = m_ElfReader->get_flags();
+        m_ELFFileHeader.e_ehsize = m_ElfReader->get_header_size();
+        m_ELFFileHeader.e_phentsize = m_ElfReader->get_segment_entry_size();
+        m_ELFFileHeader.e_phnum = static_cast<ELFIO::Elf_Half>(m_ElfReader->segments.size());
+        m_ELFFileHeader.e_shentsize = m_ElfReader->get_section_entry_size();
+        m_ELFFileHeader.e_shnum = static_cast<ELFIO::Elf_Half>(m_ElfReader->sections.size());
+        m_ELFFileHeader.e_shstrndx = m_ElfReader->get_section_name_str_index();
          
         if (m_ELFFileHeader.e_type != ELFIO::ET_EXEC) {
             CuAsmLogger::logWarning(
@@ -167,8 +158,8 @@ void CubinFile::loadCubin(const std::string& binName) {
         std::uint64_t shIndex = m_ELFFileHeader.e_ehsize;
         std::vector<std::tuple<std::uint64_t, std::uint64_t, std::string>> shEdgeList;
 
-        for (int isec = 0; isec < static_cast<int>(elfReader.sections.size()); ++isec) {
-            const ELFIO::section* elfioSection = elfReader.sections[isec];
+        for (int isec = 0; isec < static_cast<int>(m_ElfReader->sections.size()); ++isec) {
+            const ELFIO::section* elfioSection = m_ElfReader->sections[isec];
             const std::string secName = elfioSection->get_name();
 
             ELFIO::Elf64_Shdr shdr{};
@@ -220,8 +211,8 @@ void CubinFile::loadCubin(const std::string& binName) {
             secEndDict[pend] = PROGRAM_HEADER_TAG;
         }
 
-        for (int iseg = 0; iseg < static_cast<int>(elfReader.segments.size()); ++iseg) {
-            const ELFIO::segment* elfioSegment = elfReader.segments[iseg];
+        for (int iseg = 0; iseg < static_cast<int>(m_ElfReader->segments.size()); ++iseg) {
+            const ELFIO::segment* elfioSegment = m_ElfReader->segments[iseg];
 
             ELFIO::Elf64_Phdr segh{};
             segh.p_type = elfioSegment->get_type();
@@ -491,17 +482,24 @@ void CubinFile::writeImplicitSectionAsm(std::ostream& os, const std::string& sec
         writeSectionHeaderAsm(os, secName, header);
 
         const std::uint64_t symEntsize = header.sh_entsize;
-        const std::uint64_t nsym = symEntsize == 0 ? 0 : header.sh_size / symEntsize;
-        const std::span<const std::byte> strtabData =
-            m_ELFSections.count(".strtab") ? std::span<const std::byte>(m_ELFSections.at(".strtab").data) : std::span<const std::byte>();
 
-        for (std::uint64_t isym = 0; isym < nsym; ++isym) {
-            ELFIO::Elf64_Sym sym{};
-            std::memcpy(&sym, data.data() + isym * symEntsize, sizeof(sym));
-            const std::string symName = readCString(strtabData, sym.st_name);
+        ELFIO::section* symSection = m_ElfReader->sections[secName];
+        const ELFIO::symbol_section_accessor symbols(*m_ElfReader, symSection);
+        const ELFIO::Elf_Xword nsym = symbols.get_symbols_num();
+
+        for (ELFIO::Elf_Xword isym = 0; isym < nsym; ++isym) {
+            std::string symName;
+            ELFIO::Elf64_Addr value = 0;
+            ELFIO::Elf_Xword size = 0;
+            unsigned char bind = 0;
+            unsigned char type = 0;
+            unsigned char other = 0;
+            ELFIO::Elf_Half secIndex = 0;
+            symbols.get_symbol(isym, symName, value, size, bind, type, secIndex, other);
+            const unsigned char info = ELF_ST_INFO(bind, type);
 
             os << std::format("    // Symbol[{}] \"{}\": st_value=0x{:x} st_size={} st_info=0x{:x} st_other=0x{:x} st_shndx={}\n", isym,
-                               symName, sym.st_value, sym.st_size, sym.st_info, sym.st_other, sym.st_shndx);
+                               symName, value, size, info, other, secIndex);
             os << bytes2Asm(data.subspan(isym * symEntsize, symEntsize), 8, isym * symEntsize);
             os << "\n";
         }
@@ -515,42 +513,32 @@ void CubinFile::writeImplicitSectionAsm(std::ostream& os, const std::string& sec
         os << "\t// but most of the section header will be kept as is.\n";
         writeSectionHeaderAsm(os, secName, header);
 
-        const bool isRela = header.sh_entsize >= sizeof(ELFIO::Elf64_Rela);
-        const std::uint64_t relEntsize = header.sh_entsize;
-        const std::uint64_t nrel = relEntsize == 0 ? 0 : header.sh_size / relEntsize;
+        ELFIO::section* relSection = m_ElfReader->sections[secName];
+        const ELFIO::relocation_section_accessor relocs(*m_ElfReader, relSection);
+        const ELFIO::Elf_Xword nrel = relocs.get_entries_num();
 
-        const std::span<const std::byte> symtabData =
-            m_ELFSections.count(".symtab") ? std::span<const std::byte>(m_ELFSections.at(".symtab").data) : std::span<const std::byte>();
-        const std::span<const std::byte> strtabData =
-            m_ELFSections.count(".strtab") ? std::span<const std::byte>(m_ELFSections.at(".strtab").data) : std::span<const std::byte>();
-        const std::uint64_t symEntsize = m_ELFSections.count(".symtab") ? m_ELFSections.at(".symtab").header.sh_entsize : 0;
+        ELFIO::section* symSection = m_ElfReader->sections[".symtab"];
+        std::optional<ELFIO::symbol_section_accessor> symbols;
+        if (symSection) {
+            symbols.emplace(*m_ElfReader, symSection);
+        }
 
-        for (std::uint64_t irel = 0; irel < nrel; ++irel) {
-            std::uint64_t rOffset = 0;
-            std::uint64_t rInfo = 0;
-            std::int64_t rAddend = 0;
-
-            if (isRela) {
-                ELFIO::Elf64_Rela rela{};
-                std::memcpy(&rela, data.data() + irel * relEntsize, sizeof(rela));
-                rOffset = rela.r_offset;
-                rInfo = rela.r_info;
-                rAddend = rela.r_addend;
-            } else {
-                ELFIO::Elf64_Rel rel{};
-                std::memcpy(&rel, data.data() + irel * relEntsize, sizeof(rel));
-                rOffset = rel.r_offset;
-                rInfo = rel.r_info;
-            }
-
-            const std::uint32_t rSym = static_cast<std::uint32_t>(rInfo >> 32);
-            const std::uint32_t rType = static_cast<std::uint32_t>(rInfo & 0xffffffffu);
+        for (ELFIO::Elf_Xword irel = 0; irel < nrel; ++irel) {
+            ELFIO::Elf64_Addr rOffset = 0;
+            ELFIO::Elf_Word rSym = 0;
+            unsigned rType = 0;
+            ELFIO::Elf_Sxword rAddend = 0;
+            relocs.get_entry(irel, rOffset, rSym, rType, rAddend);
 
             std::string symName;
-            if (symEntsize != 0 && static_cast<std::uint64_t>(rSym) * symEntsize < symtabData.size()) {
-                ELFIO::Elf64_Sym sym{};
-                std::memcpy(&sym, symtabData.data() + rSym * symEntsize, sizeof(sym));
-                symName = readCString(strtabData, sym.st_name);
+            if (symbols) {
+                ELFIO::Elf64_Addr symValue = 0;
+                ELFIO::Elf_Xword symSize = 0;
+                unsigned char bind = 0;
+                unsigned char symType = 0;
+                unsigned char other = 0;
+                ELFIO::Elf_Half secIndex = 0;
+                symbols->get_symbol(rSym, symName, symValue, symSize, bind, symType, secIndex, other);
             }
 
             os << std::format("    // Relocation[{}] : {}, r_offset=0x{:x} r_type={} r_addend={}\n", irel, symName, rOffset, rType,
