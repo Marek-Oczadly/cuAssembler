@@ -4,11 +4,14 @@
 #include <array>
 #include <cstdio>
 #include <ctime>
+#include <format>
 #include <fstream>
 #include <iomanip>
 #include <random>
 #include <regex>
 #include <sstream>
+
+#include <boost/algorithm/string/join.hpp>
 
 #ifdef _WIN32
 #include <cstdlib>
@@ -103,13 +106,12 @@ const std::string& CalledProcessError::output() const noexcept {
 }
 
 std::string checkOutput(const std::vector<std::string>& args, bool mergeStderr) {
-    std::string cmd;
-    for (std::size_t i = 0; i < args.size(); ++i) {
-        if (i > 0) {
-            cmd += ' ';
-        }
-        cmd += quoteArg(args[i]);
+    std::vector<std::string> quotedArgs;
+    quotedArgs.reserve(args.size());
+    for (const std::string& arg : args) {
+        quotedArgs.push_back(quoteArg(arg));
     }
+    std::string cmd = boost::algorithm::join(quotedArgs, " ");
 
 #ifdef _WIN32
     // _popen() launches this via "cmd /c <command>", and cmd.exe has a quirk: unless the command
@@ -225,14 +227,11 @@ std::string binstr(const BigInt& v, int bitlen, int width, const std::string& sp
         bv = std::string(bitlen - bv.size(), '0') + bv;
     }
 
-    std::string out;
+    std::vector<std::string> chunks;
     for (int i = 0; i < bitlen; i += width) {
-        if (i > 0) {
-            out += sp;
-        }
-        out += bv.substr(i, width);
+        chunks.push_back(bv.substr(i, width));
     }
-    return out;
+    return boost::algorithm::join(chunks, sp);
 }
 
 std::string hexstr(const BigInt& v, int bitlen, int width, const std::string& sp) {
@@ -245,14 +244,11 @@ std::string hexstr(const BigInt& v, int bitlen, int width, const std::string& sp
         hv = std::string(lhex - hv.size(), '0') + hv;
     }
 
-    std::string out;
+    std::vector<std::string> chunks;
     for (int i = 0; i < lhex; i += width) {
-        if (i > 0) {
-            out += sp;
-        }
-        out += hv.substr(i, width);
+        chunks.push_back(hv.substr(i, width));
     }
-    return out;
+    return boost::algorithm::join(chunks, sp);
 }
 
 std::pair<std::uint64_t, std::uint64_t> alignTo(std::uint64_t pos, std::uint64_t align) {
@@ -265,23 +261,12 @@ std::pair<std::uint64_t, std::uint64_t> alignTo(std::uint64_t pos, std::uint64_t
 }
 
 std::string intList2Str(const std::vector<std::int64_t>& vlist, int width) {
-    std::ostringstream sio;
-    sio << '[';
-    for (std::size_t i = 0; i < vlist.size(); ++i) {
-        if (i > 0) {
-            sio << ", ";
-        }
-
-        std::ostringstream hexOs;
-        hexOs << std::hex << vlist[i];
-        std::string hv = hexOs.str();
-        if (width > 0 && static_cast<int>(hv.size()) < width) {
-            hv = std::string(width - hv.size(), '0') + hv;
-        }
-        sio << "0x" << hv;
+    std::vector<std::string> items;
+    items.reserve(vlist.size());
+    for (std::int64_t v : vlist) {
+        items.push_back(std::format("0x{:0{}x}", static_cast<std::uint64_t>(v), std::max(0, width)));
     }
-    sio << ']';
-    return sio.str();
+    return "[" + boost::algorithm::join(items, ", ") + "]";
 }
 
 std::map<std::string, std::pair<int, int>> splitAsmSection(const std::vector<std::string>& lines) {
@@ -408,6 +393,34 @@ std::string stripComments(const std::string& s) {
         return "";
     }
     return out.substr(b, e - b + 1);
+}
+
+std::string pyStrRepr(const std::string& s) {
+    std::string out = "'";
+    for (char c : s) {
+        if (c == '\'' || c == '\\') {
+            out += '\\';
+        }
+        out += c;
+    }
+    out += "'";
+    return out;
+}
+
+std::string pyStrListRepr(const std::vector<std::string>& v) {
+    std::string out = "[";
+    for (std::size_t i = 0; i < v.size(); ++i) {
+        out += pyStrRepr(v[i]);
+        if (i + 1 < v.size()) {
+            out += ", ";
+        }
+    }
+    out += "]";
+    return out;
+}
+
+std::string hexFixedWidth(std::uint64_t v, int width) {
+    return std::format("0x{:0{}x}", v, std::max(0, width - 2));
 }
 
 } // namespace CuAsm

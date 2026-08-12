@@ -1,8 +1,7 @@
 #include "CuControlCode.hpp"
 
-#include <iomanip>
+#include <format>
 #include <regex>
-#include <sstream>
 #include <stdexcept>
 #include <vector>
 
@@ -105,10 +104,7 @@ std::string CuControlCode::decode(std::uint32_t code) {
         sWaitbar += (waitbar & (1u << i)) == 0 ? "-" : std::to_string(i);
     }
 
-    std::ostringstream sStall;
-    sStall << std::setfill('0') << std::setw(2) << stall;
-
-    return "B" + sWaitbar + ":R" + sReadbar + ":W" + sWritebar + ":" + sYield + ":S" + sStall.str();
+    return std::format("B{}:R{}:W{}:{}:S{:02}", sWaitbar, sReadbar, sWritebar, sYield, stall);
 }
 
 std::uint32_t CuControlCode::encode(const std::string& s) {

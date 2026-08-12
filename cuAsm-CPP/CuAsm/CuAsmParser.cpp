@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <functional>
 #include <iomanip>
@@ -611,18 +612,13 @@ public:
      **/
     CuAsmLabel(std::string labelName, CuAsmSection* labelSection, std::uint64_t labelOffset, int labelLineNo)
         : name(std::move(labelName)), section(labelSection), offset(labelOffset), lineNo(labelLineNo) {
-        std::ostringstream o;
-        o << "Line " << std::setw(6) << lineNo << ": New Label \"" << name << "\" at section \"" << section->name
-          << "\":0x" << std::hex << offset;
-        CuAsmLogger::logSubroutine(o.str());
+        CuAsmLogger::logSubroutine(
+            std::format("Line {:6}: New Label \"{}\" at section \"{}\":0x{:x}", lineNo, name, section->name, offset));
     }
 
     /** @brief Formats a debug summary of this label. @return The summary string. */
     std::string toString() const {
-        std::ostringstream o;
-        o << "Label @Line " << std::setw(4) << lineNo << " in section " << section->name << " : 0x" << std::hex << offset
-          << std::dec << "(" << offset << ")  " << name;
-        return o.str();
+        return std::format("Label @Line {:4} in section {} : 0x{:x}({})  {}", lineNo, section->name, offset, offset, name);
     }
 
     std::string name;
@@ -647,10 +643,8 @@ public:
      **/
     CuAsmFixup(CuAsmSection* fixupSection, std::uint64_t fixupOffset, std::string fixupExpr, std::string fixupDtype, int fixupLineNo)
         : section(fixupSection), offset(fixupOffset), lineNo(fixupLineNo), dtype(std::move(fixupDtype)), expr(std::move(fixupExpr)) {
-        std::ostringstream o;
-        o << "Line " << std::setw(6) << lineNo << ": New Fixup \"" << expr << "\" at section \"" << section->name << "\":0x"
-          << std::hex << offset;
-        CuAsmLogger::logSubroutine(o.str());
+        CuAsmLogger::logSubroutine(
+            std::format("Line {:6}: New Fixup \"{}\" at section \"{}\":0x{:x}", lineNo, expr, section->name, offset));
     }
 
     /** @brief Formats a debug summary of this fixup. @return The summary string. */
@@ -837,30 +831,24 @@ struct ExprResult {
 
 /** @brief Dumps an Elf64_Ehdr as a flat "field=value" line for debug comparison. */
 std::string dumpEhdr(const ELFIO::Elf64_Ehdr& h) {
-    std::ostringstream o;
-    o << "e_type=" << h.e_type << " e_machine=" << h.e_machine << " e_version=" << h.e_version << " e_entry=0x" << std::hex
-      << h.e_entry << " e_phoff=0x" << h.e_phoff << " e_shoff=0x" << h.e_shoff << " e_flags=0x" << h.e_flags << std::dec
-      << " e_ehsize=" << h.e_ehsize << " e_phentsize=" << h.e_phentsize << " e_phnum=" << h.e_phnum
-      << " e_shentsize=" << h.e_shentsize << " e_shnum=" << h.e_shnum << " e_shstrndx=" << h.e_shstrndx;
-    return o.str();
+    return std::format("e_type={} e_machine={} e_version={} e_entry=0x{:x} e_phoff=0x{:x} e_shoff=0x{:x} e_flags=0x{:x} "
+                        "e_ehsize={} e_phentsize={} e_phnum={} e_shentsize={} e_shnum={} e_shstrndx={}",
+                        h.e_type, h.e_machine, h.e_version, h.e_entry, h.e_phoff, h.e_shoff, h.e_flags, h.e_ehsize,
+                        h.e_phentsize, h.e_phnum, h.e_shentsize, h.e_shnum, h.e_shstrndx);
 }
 
 /** @brief Dumps an Elf64_Shdr as a flat "field=value" line for debug comparison. */
 std::string dumpShdr(const ELFIO::Elf64_Shdr& h) {
-    std::ostringstream o;
-    o << "sh_name=" << h.sh_name << " sh_type=" << h.sh_type << " sh_flags=0x" << std::hex << h.sh_flags << " sh_addr=0x"
-      << h.sh_addr << " sh_offset=0x" << h.sh_offset << std::dec << " sh_size=" << h.sh_size << " sh_link=" << h.sh_link
-      << " sh_info=" << h.sh_info << " sh_addralign=" << h.sh_addralign << " sh_entsize=" << h.sh_entsize;
-    return o.str();
+    return std::format("sh_name={} sh_type={} sh_flags=0x{:x} sh_addr=0x{:x} sh_offset=0x{:x} sh_size={} sh_link={} "
+                        "sh_info={} sh_addralign={} sh_entsize={}",
+                        h.sh_name, h.sh_type, h.sh_flags, h.sh_addr, h.sh_offset, h.sh_size, h.sh_link, h.sh_info,
+                        h.sh_addralign, h.sh_entsize);
 }
 
 /** @brief Dumps an Elf64_Phdr as a flat "field=value" line for debug comparison. */
 std::string dumpPhdr(const ELFIO::Elf64_Phdr& h) {
-    std::ostringstream o;
-    o << "p_type=" << h.p_type << " p_flags=" << h.p_flags << " p_offset=0x" << std::hex << h.p_offset << " p_vaddr=0x"
-      << h.p_vaddr << " p_paddr=0x" << h.p_paddr << std::dec << " p_filesz=" << h.p_filesz << " p_memsz=" << h.p_memsz
-      << " p_align=" << h.p_align;
-    return o.str();
+    return std::format("p_type={} p_flags={} p_offset=0x{:x} p_vaddr=0x{:x} p_paddr=0x{:x} p_filesz={} p_memsz={} p_align={}",
+                        h.p_type, h.p_flags, h.p_offset, h.p_vaddr, h.p_paddr, h.p_filesz, h.p_memsz, h.p_align);
 }
 
 } // namespace
@@ -1957,9 +1945,7 @@ std::string CuAsmParser::Impl::evalInstructionFixup(CuAsmSection& section, std::
                     targetAddr -= 8;
                 }
             }
-            std::ostringstream v;
-            v << "0x" << std::hex << targetAddr;
-            return std::regex_replace(s, pInsLabel, v.str());
+            return std::regex_replace(s, pInsLabel, std::format("0x{:x}", targetAddr));
         }
 
         std::string symname = label;
@@ -2005,8 +1991,7 @@ void CuAsmParser::Impl::updateSectionForFixup(CuAsmFixup& fixup) {
     std::string bs = packUnsignedLE(v, blen);
     fixup.section->updateForFixup(fixup.offset, bs);
 
-    CuAsmLogger::logSubroutine("Eval fixup \"" + fixup.expr + "\" @line" + std::to_string(fixup.lineNo) + " to 0x" +
-                                [v] { std::ostringstream o; o << std::hex << v; return o.str(); }());
+    CuAsmLogger::logSubroutine(std::format("Eval fixup \"{}\" @line{} to 0x{:x}", fixup.expr, fixup.lineNo, v));
 }
 
 void CuAsmParser::Impl::emitBytes(const std::string& bs) { mCurrSection->emitBytes(bs); }
@@ -2126,9 +2111,7 @@ std::string CuAsmParser::Impl::checkNVInfoOffsetLabels(CuAsmSection* section, co
     mNVInfoOffsetLabels[kname][attr].push_back(static_cast<std::uint32_t>(offset));
 
     if (vs[3] == "#") {
-        std::ostringstream lstr;
-        lstr << 'L' << std::hex << std::setw(8) << std::setfill('0') << mLineNo;
-        return labelname.substr(0, labelname.size() - 1) + lstr.str();
+        return labelname.substr(0, labelname.size() - 1) + std::format("L{:08x}", mLineNo);
     }
     return labelname;
 }
@@ -2167,10 +2150,7 @@ void CuAsmParser::Impl::saveAsCubin(const std::string& path) {
 
     auto disppos = [&](const std::string& s) {
         auto pos = static_cast<std::uint64_t>(fout.tellp());
-        std::ostringstream o;
-        o << "0x" << std::hex << std::setw(8) << std::setfill('0') << pos << std::dec << "(" << std::setw(8)
-          << std::setfill('0') << pos << ") : " << s;
-        CuAsmLogger::logSubroutine(o.str());
+        CuAsmLogger::logSubroutine(std::format("0x{:08x}({:08}) : {}", pos, pos, s));
     };
 
     disppos("FileHeader");
@@ -2216,8 +2196,8 @@ void CuAsmParser::Impl::saveCubinCmp(const std::string& cubinName, const std::st
     }
 
     fasm << "FileHeader:\n" << dumpEhdr(mCuAsmFile.getFileHeaderStruct()) << "\n";
-    fbin << "FileHeader:\ne_type=" << reader.get_type() << " e_machine=" << reader.get_machine()
-         << " e_entry=0x" << std::hex << reader.get_entry() << std::dec << "\n";
+    fbin << std::format("FileHeader:\ne_type={} e_machine={} e_entry=0x{:x}\n", reader.get_type(), reader.get_machine(),
+                         reader.get_entry());
 
     for (auto& [sname, secPtr] : mSectionDict) {
         fasm << "# Section " << sname << "\n";
@@ -2238,10 +2218,10 @@ void CuAsmParser::Impl::saveCubinCmp(const std::string& cubinName, const std::st
     for (ELFIO::Elf_Half i = 0; i < numSections; ++i) {
         const ELFIO::section* sec = reader.sections[i];
         fbin << "# Section " << sec->get_name() << "\n";
-        fbin << "sh_type=" << sec->get_type() << " sh_flags=0x" << std::hex << sec->get_flags() << " sh_offset=0x"
-             << sec->get_offset() << std::dec << " sh_size=" << sec->get_size() << " sh_link=" << sec->get_link()
-             << " sh_info=" << sec->get_info() << " sh_addralign=" << sec->get_addr_align()
-             << " sh_entsize=" << sec->get_entry_size() << "\n";
+        fbin << std::format("sh_type={} sh_flags=0x{:x} sh_offset=0x{:x} sh_size={} sh_link={} sh_info={} sh_addralign={} "
+                             "sh_entsize={}\n",
+                             sec->get_type(), sec->get_flags(), sec->get_offset(), sec->get_size(), sec->get_link(),
+                             sec->get_info(), sec->get_addr_align(), sec->get_entry_size());
         if (sec->get_type() != ELFIO::SHT_NOBITS) {
             fbin << bytes2Asm(std::string(sec->get_data(), sec->get_size())) << "\n\n";
         } else {
@@ -2252,10 +2232,10 @@ void CuAsmParser::Impl::saveCubinCmp(const std::string& cubinName, const std::st
     ELFIO::Elf_Half numSegments = reader.segments.size();
     for (ELFIO::Elf_Half i = 0; i < numSegments; ++i) {
         const ELFIO::segment* seg = reader.segments[i];
-        fbin << "p_type=" << seg->get_type() << " p_flags=" << seg->get_flags() << " p_offset=0x" << std::hex
-             << seg->get_offset() << " p_vaddr=0x" << seg->get_virtual_address() << " p_paddr=0x"
-             << seg->get_physical_address() << std::dec << " p_filesz=" << seg->get_file_size()
-             << " p_memsz=" << seg->get_memory_size() << " p_align=" << seg->get_align() << "\n";
+        fbin << std::format("p_type={} p_flags={} p_offset=0x{:x} p_vaddr=0x{:x} p_paddr=0x{:x} p_filesz={} p_memsz={} "
+                             "p_align={}\n",
+                             seg->get_type(), seg->get_flags(), seg->get_offset(), seg->get_virtual_address(),
+                             seg->get_physical_address(), seg->get_file_size(), seg->get_memory_size(), seg->get_align());
     }
 }
 
@@ -2265,7 +2245,7 @@ void CuAsmParser::Impl::dispFixupList() const {
         std::cout << "    []\n";
     }
     for (std::size_t i = 0; i < mFixupList.size(); ++i) {
-        std::cout << "Fixup " << std::setw(3) << i << ": " << mFixupList[i]->toString() << "\n";
+        std::cout << std::format("Fixup {:3}: {}\n", i, mFixupList[i]->toString());
     }
     std::cout << std::endl;
 }
@@ -2276,7 +2256,7 @@ void CuAsmParser::Impl::dispRelocationList() const {
         std::cout << "    No relocations.\n";
     }
     for (std::size_t i = 0; i < mRelList.size(); ++i) {
-        std::cout << "Relocation " << std::setw(3) << i << ": " << mRelList[i]->toString() << "\n";
+        std::cout << std::format("Relocation {:3}: {}\n", i, mRelList[i]->toString());
     }
     std::cout << std::endl;
 }
@@ -2292,10 +2272,8 @@ void CuAsmParser::Impl::dispSectionList() const {
     std::size_t i = 0;
     for (const auto& [sname, secPtr] : mSectionDict) {
         const ELFIO::Elf64_Shdr& h = secPtr->getHeaderStruct();
-        std::cout << std::hex << std::setw(4) << i << "  " << std::setw(6) << h.sh_offset << "  " << std::setw(6) << h.sh_size
-                  << "  " << std::setw(4) << h.sh_entsize << "  " << std::setw(3) << secPtr->addralign << "  " << std::setw(12)
-                  << h.sh_type << "  " << std::setw(6) << h.sh_flags << "  " << std::setw(6) << h.sh_link << "  " << std::setw(8)
-                  << h.sh_info << std::dec << "  " << sname << "\n";
+        std::cout << std::format("{:4x}  {:6x}  {:6x}  {:4x}  {:3x}  {:12x}  {:6x}  {:6x}  {:8x}  {}\n", i, h.sh_offset, h.sh_size,
+                                  h.sh_entsize, secPtr->addralign, h.sh_type, h.sh_flags, h.sh_link, h.sh_info, sname);
         ++i;
     }
     std::cout << std::endl;
@@ -2346,11 +2324,11 @@ void CuAsmParser::Impl::dispFileHeader() const {
 void CuAsmParser::Impl::dispTables() const {
     std::cout << ".shstrtab:\n";
     for (const auto& [idx, str] : mShstrtabDict) {
-        std::cout << "0x" << std::hex << idx << std::dec << "\t" << str << "\n";
+        std::cout << std::format("0x{:x}\t{}\n", idx, str);
     }
     std::cout << ".strtab:\n";
     for (const auto& [idx, str] : mStrtabDict) {
-        std::cout << "0x" << std::hex << idx << std::dec << "\t" << str << "\n";
+        std::cout << std::format("0x{:x}\t{}\n", idx, str);
     }
     std::cout << ".symtab\n";
     std::size_t i = 0;

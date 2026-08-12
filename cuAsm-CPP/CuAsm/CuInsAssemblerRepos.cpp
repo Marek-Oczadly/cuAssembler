@@ -10,33 +10,15 @@
 #include <sstream>
 #include <stdexcept>
 
+#include <boost/algorithm/string/join.hpp>
+
 #include "CuAsmLogger.hpp"
+#include "common.hpp"
 #include "config.hpp"
 
 namespace CuAsm {
 
 namespace {
-
-/** @brief python repr() of a plain string, mirroring the single-quoted string literals used
- *         throughout CuInsAssemblerRepos.__repr__. */
-std::string pyStrRepr(const std::string& s) {
-    std::string out = "'";
-    for (char c : s) {
-        if (c == '\'' || c == '\\') {
-            out += '\\';
-        }
-        out += c;
-    }
-    out += "'";
-    return out;
-}
-
-/** @brief python '%#08x'-style formatting of a std::uint64_t. */
-std::string hexFixedWidth(std::uint64_t v, int width) {
-    std::ostringstream oss;
-    oss << "0x" << std::hex << std::setfill('0') << std::setw(std::max(0, width - 2)) << v;
-    return oss.str();
-}
 
 // ---------------------------------------------------------------------------------------------
 // A minimal recursive-descent parser for the literal syntax CuInsAssembler::repr()/
@@ -928,15 +910,13 @@ std::string CuInsAssemblerRepos::getInsKeyCandidates(const std::string& key, int
         return "None";
     }
 
-    std::string out;
     const int limit = std::min<int>(n, static_cast<int>(scored.size()));
+    std::vector<std::string> lines;
+    lines.reserve(static_cast<std::size_t>(limit));
     for (int i = 0; i < limit; ++i) {
-        out += "        " + scored[static_cast<std::size_t>(i)].second;
-        if (i + 1 < limit) {
-            out += "\n";
-        }
+        lines.push_back("        " + scored[static_cast<std::size_t>(i)].second);
     }
-    return out;
+    return boost::algorithm::join(lines, "\n");
 }
 
 std::string CuInsAssemblerRepos::repr() const {

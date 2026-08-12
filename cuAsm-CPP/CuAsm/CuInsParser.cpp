@@ -101,19 +101,6 @@ std::int64_t parseHexSigned(const std::string& s) {
     return static_cast<std::int64_t>(bits);
 }
 
-/** @brief python repr() of a string list, e.g. "['0_MOV']", used by dumpInfo. */
-std::string pyStrListRepr(const std::vector<std::string>& v) {
-    std::string out = "[";
-    for (std::size_t i = 0; i < v.size(); ++i) {
-        out += "'" + v[i] + "'";
-        if (i + 1 < v.size()) {
-            out += ", ";
-        }
-    }
-    out += "]";
-    return out;
-}
-
 /** @brief Gets the text before the first '.', or the whole string if there is none. */
 std::string firstDotSegment(const std::string& s) {
     const std::size_t pos = s.find('.');

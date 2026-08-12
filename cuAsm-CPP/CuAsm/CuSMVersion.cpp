@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstring>
+#include <format>
 #include <iomanip>
 #include <regex>
 #include <sstream>
@@ -217,9 +218,8 @@ std::string hackDisassembly7x8x(std::uint64_t code, const std::string& asmLine) 
     }
 
     const std::uint64_t fimm = (code & (std::uint64_t(0xffffffffu) << 32)) >> 32;
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "0f%08x", static_cast<unsigned int>(fimm));
-    return std::regex_replace(asmLine, qnanPattern(), buf);
+    const std::string rep = std::format("0f{:08x}", static_cast<unsigned int>(fimm));
+    return std::regex_replace(asmLine, qnanPattern(), rep);
 }
 
 std::string hackDisassembly5x6x(std::uint64_t code, const std::string& asmLine) {
@@ -232,9 +232,8 @@ std::string hackDisassembly5x6x(std::uint64_t code, const std::string& asmLine) 
     const std::uint64_t fimm = (code & (bmask << 20)) >> 20;
 
     const bool neg = asmLine.find("-QNAN") != std::string::npos;
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "%s0f%05x", neg ? "-" : "", static_cast<unsigned int>(fimm));
-    return std::regex_replace(asmLine, qnanPattern(), buf); // FIXME: neg sign moved? (mirrors python original)
+    const std::string rep = std::format("{}0f{:05x}", neg ? "-" : "", static_cast<unsigned int>(fimm));
+    return std::regex_replace(asmLine, qnanPattern(), rep); // FIXME: neg sign moved? (mirrors python original)
 }
 
 // ---- Float immediate packing, mirroring CuSMVersion.convertFloatImme's struct.pack/unpack ----

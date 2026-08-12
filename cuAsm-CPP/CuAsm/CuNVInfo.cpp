@@ -1,6 +1,6 @@
 #include "CuNVInfo.hpp"
 
-#include <cstdio>
+#include <format>
 #include <iostream>
 #include <stdexcept>
 
@@ -79,9 +79,7 @@ std::string getAttrName(std::uint16_t attrKey) {
         return it->second;
     }
 
-    char buf[24];
-    std::snprintf(buf, sizeof(buf), "EIATTR_UNKNOWN_0x%04x", attrKey);
-    return buf;
+    return std::format("EIATTR_UNKNOWN_0x{:04x}", attrKey);
 }
 
 std::vector<CuNVInfoAttr> decodeAttrList(const std::vector<std::uint8_t>& bytecodes) {
@@ -123,9 +121,7 @@ std::vector<CuNVInfoAttr> decodeAttrList(const std::vector<std::uint8_t>& byteco
 
         const std::string attrName = getAttrName(attrKey);
         if (!eiattrTable().count(attrKey)) {
-            char buf[96];
-            std::snprintf(buf, sizeof(buf), "WARNING!!! Unknown EIATTR 0x%04x! Some offsets may not work properly!", attrKey);
-            std::cout << buf << std::endl;
+            std::cout << std::format("WARNING!!! Unknown EIATTR 0x{:04x}! Some offsets may not work properly!", attrKey) << std::endl;
         }
 
         attrList.push_back({attrName, val});

@@ -6,6 +6,7 @@
 #include <sstream>
 
 #include "CuAsmLogger.hpp"
+#include "common.hpp"
 
 namespace CuAsm {
 
@@ -22,39 +23,12 @@ bool allModiKnown(const ModiSet& modiSet, const InsModi& modi) {
     return std::all_of(modi.begin(), modi.end(), [&](const std::string& m) { return indexOfModi(modiSet, m) >= 0; });
 }
 
-/** @brief python repr() of a plain string, mirroring the single-quoted string literals used
- *         throughout CuInsAssembler.__repr__. */
-std::string pyStrRepr(const std::string& s) {
-    std::string out = "'";
-    for (char c : s) {
-        if (c == '\'' || c == '\\') {
-            out += '\\';
-        }
-        out += c;
-    }
-    out += "'";
-    return out;
-}
-
 /** @brief python repr() of an int list, e.g. "[7, 1, 0, 32]". */
 std::string pyIntListRepr(const InsVals& vals) {
     std::string out = "[";
     for (std::size_t i = 0; i < vals.size(); ++i) {
         out += vals[i].str();
         if (i + 1 < vals.size()) {
-            out += ", ";
-        }
-    }
-    out += "]";
-    return out;
-}
-
-/** @brief python repr() of a string list, e.g. "['0_MOV']". */
-std::string pyStrListRepr(const InsModi& modi) {
-    std::string out = "[";
-    for (std::size_t i = 0; i < modi.size(); ++i) {
-        out += pyStrRepr(modi[i]);
-        if (i + 1 < modi.size()) {
             out += ", ";
         }
     }
@@ -85,13 +59,6 @@ std::string pyHexFixedWidth(const BigInt& v, int width) {
     const int prefixLen = (neg ? 1 : 0) + 2;
     const int padLen = std::max(0, width - prefixLen - static_cast<int>(digits.size()));
     return (neg ? std::string("-") : std::string()) + "0x" + std::string(static_cast<std::size_t>(padLen), '0') + digits;
-}
-
-/** @brief python '%#0<width>x' formatting of a std::uint64_t (e.g. addr fields). */
-std::string hexFixedWidth(std::uint64_t v, int width) {
-    std::ostringstream oss;
-    oss << "0x" << std::hex << std::setfill('0') << std::setw(std::max(0, width - 2)) << v;
-    return oss.str();
 }
 
 /** @brief Renders a RationalMatrix as sympy's default Matrix repr: decimal, column-aligned, no

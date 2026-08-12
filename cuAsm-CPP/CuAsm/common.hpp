@@ -148,6 +148,29 @@ void bytesdump(const std::string& inname, const std::string& outname);
 std::string stripComments(const std::string& s);
 
 /**
+ * @brief python repr() of a plain string: single-quoted, with `'`/`\` backslash-escaped.
+ * @param s String to format.
+ * @return The formatted, single-quoted representation.
+ **/
+std::string pyStrRepr(const std::string& s);
+
+/**
+ * @brief python repr() of a string list, e.g. "['0_MOV']".
+ * @param v Strings to format.
+ * @return The formatted, bracketed representation.
+ **/
+std::string pyStrListRepr(const std::vector<std::string>& v);
+
+/**
+ * @brief python '%#0<width>x'-style formatting of a std::uint64_t: "0x"-prefixed, zero-padded so
+ *        the whole field (including the "0x" prefix) is at least `width` characters wide.
+ * @param v Value to format.
+ * @param width Minimum total field width, including the "0x" prefix.
+ * @return The formatted hex string.
+ **/
+std::string hexFixedWidth(std::uint64_t v, int width);
+
+/**
  * @brief Writes a list to a stream in python repr-list style, mirroring CuAsm.common.reprList.
  *        Element type T must support operator<<(std::ostream&, const T&).
  * @param os Stream to write to.

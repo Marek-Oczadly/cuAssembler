@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include <boost/algorithm/string/join.hpp>
 #include <elfio/elf_types.hpp>
 
 #ifdef _WIN32
@@ -198,15 +199,12 @@ std::string formatNVInfoValueForLog(const CuNVInfoValue& val) {
         return std::to_string(std::get<std::uint32_t>(val));
     }
     const auto& vec = std::get<std::vector<std::uint32_t>>(val);
-    std::string s = "[";
-    for (std::size_t i = 0; i < vec.size(); ++i) {
-        if (i > 0) {
-            s += ", ";
-        }
-        s += std::to_string(vec[i]);
+    std::vector<std::string> items;
+    items.reserve(vec.size());
+    for (std::uint32_t v : vec) {
+        items.push_back(std::to_string(v));
     }
-    s += "]";
-    return s;
+    return "[" + boost::algorithm::join(items, ", ") + "]";
 }
 
 /** @brief Converts one glob path component ('*'/'?' wildcards) into an equivalent regex. */

@@ -1,9 +1,8 @@
 #include "CubinFile.hpp"
 
-#include <cstdarg>
-#include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <regex>
 #include <sstream>
@@ -85,26 +84,6 @@ std::string segTypeName(std::uint32_t type) {
     }
 }
 
-/** @brief printf-style formatting into a std::string, used to mirror python's '%' formatting. */
-std::string format(const char* fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    va_list argsCopy;
-    va_copy(argsCopy, args);
-    const int needed = std::vsnprintf(nullptr, 0, fmt, argsCopy);
-    va_end(argsCopy);
-
-    if (needed < 0) {
-        va_end(args);
-        return std::string();
-    }
-
-    std::string result(static_cast<std::size_t>(needed), '\0');
-    std::vsnprintf(result.data(), static_cast<std::size_t>(needed) + 1, fmt, args);
-    va_end(args);
-    return result;
-}
-
 } // namespace
 
 CubinFile::CubinFile(const std::string& cubinName) : m_CubinName(cubinName) {
@@ -162,8 +141,8 @@ void CubinFile::loadCubin(const std::string& binName) {
         m_ELFFileHeader.e_shstrndx = elfReader.get_section_name_str_index();
          
         if (m_ELFFileHeader.e_type != ELFIO::ET_EXEC) {
-            CuAsmLogger::logWarning(format("Currently only ET_EXEC type of elf is supported! %s given...",
-                                            elfTypeName(m_ELFFileHeader.e_type).c_str()));
+            CuAsmLogger::logWarning(
+                std::format("Currently only ET_EXEC type of elf is supported! {} given...", elfTypeName(m_ELFFileHeader.e_type)));
         } else if (m_ELFFileHeader.e_shoff == m_ELFFileHeader.e_ehsize) {
             const std::string msg = "Abnormal elf layout detected! Section headers directly follow elf header.";
             CuAsmLogger::logWarning(msg);
@@ -257,8 +236,7 @@ void CubinFile::loadCubin(const std::string& binName) {
                 auto itStart = secStartDict.find(p0);
                 if (itStart == secStartDict.end()) {
                     CuAsmLogger::logWarning(
-                        format("The segment start (0x%llx, 0x%llx) doesnot align with sections!",
-                               static_cast<unsigned long long>(p0), static_cast<unsigned long long>(p1)));
+                        std::format("The segment start (0x{:x}, 0x{:x}) doesnot align with sections!", p0, p1));
                     CuAsmLogger::logWarning("Try to seek the nearest one...");
 
                     bool found = false;
@@ -270,9 +248,8 @@ void CubinFile::loadCubin(const std::string& binName) {
                         }
                     }
                     if (!found) {
-                        const std::string msg = format("Cannot locate start position for segment %u with range (0x%llx, 0x%llx)!",
-                                                         static_cast<unsigned>(iseg), static_cast<unsigned long long>(p0),
-                                                         static_cast<unsigned long long>(p1));
+                        const std::string msg =
+                            std::format("Cannot locate start position for segment {} with range (0x{:x}, 0x{:x})!", iseg, p0, p1);
                         CuAsmLogger::logCritical(msg);
                         throw std::runtime_error(msg);
                     }
@@ -285,8 +262,7 @@ void CubinFile::loadCubin(const std::string& binName) {
                 auto itEnd = secEndDict.find(p1);
                 if (itEnd == secEndDict.end()) {
                     CuAsmLogger::logWarning(
-                        format("The segment end (0x%llx, 0x%llx) doesnot align with sections!",
-                               static_cast<unsigned long long>(p0), static_cast<unsigned long long>(p1)));
+                        std::format("The segment end (0x{:x}, 0x{:x}) doesnot align with sections!", p0, p1));
                     CuAsmLogger::logWarning("Try to seek the nearest one...");
 
                     bool found = false;
@@ -298,9 +274,8 @@ void CubinFile::loadCubin(const std::string& binName) {
                         }
                     }
                     if (!found) {
-                        const std::string msg = format("Cannot locate end position for segment %u with range (0x%llx, 0x%llx)!",
-                                                         static_cast<unsigned>(iseg), static_cast<unsigned long long>(p0),
-                                                         static_cast<unsigned long long>(p1));
+                        const std::string msg =
+                            std::format("Cannot locate end position for segment {} with range (0x{:x}, 0x{:x})!", iseg, p0, p1);
                         CuAsmLogger::logCritical(msg);
                         throw std::runtime_error(msg);
                     }
@@ -356,49 +331,45 @@ void CubinFile::writeFileHeaderAsm(std::ostream& os, const std::string& ident) c
         os << ident << "// " << m_AsmLines[i] << "\n";
     }
 
-    os << ident << format(".__elf_ident_osabi      %d\n", fheader.e_ident[ELFIO::EI_OSABI]);
-    os << ident << format(".__elf_ident_abiversion %d\n", fheader.e_ident[ELFIO::EI_ABIVERSION]);
-    os << ident << format(".__elf_type             %s\n", elfTypeName(fheader.e_type).c_str());
-    os << ident << format(".__elf_machine          %s\n", elfMachineName(fheader.e_machine).c_str());
-    os << ident << format(".__elf_version          %u \t\t// CUDA toolkit version \n", fheader.e_version);
-    os << ident << format(".__elf_entry            %llu \t\t// entry point address \n",
-                          static_cast<unsigned long long>(fheader.e_entry));
-    os << ident << format(".__elf_phoff            0x%llx \t\t// program header offset, maybe updated by assembler\n",
-                          static_cast<unsigned long long>(fheader.e_phoff));
-    os << ident << format(".__elf_shoff            0x%llx \t\t// section header offset, maybe updated by assembler\n",
-                          static_cast<unsigned long long>(fheader.e_shoff));
+    os << ident << std::format(".__elf_ident_osabi      {}\n", fheader.e_ident[ELFIO::EI_OSABI]);
+    os << ident << std::format(".__elf_ident_abiversion {}\n", fheader.e_ident[ELFIO::EI_ABIVERSION]);
+    os << ident << std::format(".__elf_type             {}\n", elfTypeName(fheader.e_type));
+    os << ident << std::format(".__elf_machine          {}\n", elfMachineName(fheader.e_machine));
+    os << ident << std::format(".__elf_version          {} \t\t// CUDA toolkit version \n", fheader.e_version);
+    os << ident << std::format(".__elf_entry            {} \t\t// entry point address \n", fheader.e_entry);
+    os << ident
+       << std::format(".__elf_phoff            0x{:x} \t\t// program header offset, maybe updated by assembler\n", fheader.e_phoff);
+    os << ident
+       << std::format(".__elf_shoff            0x{:x} \t\t// section header offset, maybe updated by assembler\n", fheader.e_shoff);
 
     const std::uint32_t vsmversion = (fheader.e_flags >> 16) & 0xff;
     const std::uint32_t smversion = fheader.e_flags & 0xff;
     os << ident
-       << format(".__elf_flags            0x%x \t\t// Flags, SM_%u(0x%x), COMPUTE_%u(0x%x) \n", fheader.e_flags, smversion,
-                  smversion, vsmversion, vsmversion);
-    os << ident << format(".__elf_ehsize           %u \t\t// elf header size \n", fheader.e_ehsize);
-    os << ident << format(".__elf_phentsize        %u \t\t// program entry size\n", fheader.e_phentsize);
-    os << ident << format(".__elf_phnum            %u \t\t// number of program entries\n", fheader.e_phnum);
-    os << ident << format(".__elf_shentsize        %u \t\t// section entry size\n", fheader.e_shentsize);
+       << std::format(".__elf_flags            0x{:x} \t\t// Flags, SM_{}(0x{:x}), COMPUTE_{}(0x{:x}) \n", fheader.e_flags, smversion,
+                       smversion, vsmversion, vsmversion);
+    os << ident << std::format(".__elf_ehsize           {} \t\t// elf header size \n", fheader.e_ehsize);
+    os << ident << std::format(".__elf_phentsize        {} \t\t// program entry size\n", fheader.e_phentsize);
+    os << ident << std::format(".__elf_phnum            {} \t\t// number of program entries\n", fheader.e_phnum);
+    os << ident << std::format(".__elf_shentsize        {} \t\t// section entry size\n", fheader.e_shentsize);
     os << ident
-       << format(".__elf_shnum            %u \t\t// number of sections, currently no sections can be appended/removed\n",
-                  fheader.e_shnum);
-    os << ident << format(".__elf_shstrndx         %u \t\t// Section name string table index \n", fheader.e_shstrndx);
+       << std::format(".__elf_shnum            {} \t\t// number of sections, currently no sections can be appended/removed\n",
+                       fheader.e_shnum);
+    os << ident << std::format(".__elf_shstrndx         {} \t\t// Section name string table index \n", fheader.e_shstrndx);
     os << "\n";
 }
 
 void CubinFile::writeSectionHeaderAsm(std::ostream& os, const std::string& /*secName*/, const ELFIO::Elf64_Shdr& header,
                                        const std::string& ident) const {
-    os << ident << format(".__section_name         0x%x \t// offset in .shstrtab\n", header.sh_name);
-    os << ident << format(".__section_type         %s\n", shTypeName(header.sh_type).c_str());
-    os << ident << format(".__section_flags        0x%llx\n", static_cast<unsigned long long>(header.sh_flags));
-    os << ident << format(".__section_addr         0x%llx\n", static_cast<unsigned long long>(header.sh_addr));
-    os << ident
-       << format(".__section_offset       0x%llx \t// maybe updated by assembler\n", static_cast<unsigned long long>(header.sh_offset));
-    os << ident
-       << format(".__section_size         0x%llx \t// maybe updated by assembler\n", static_cast<unsigned long long>(header.sh_size));
-    os << ident << format(".__section_link         %u\n", header.sh_link);
-    os << ident << format(".__section_info         0x%x\n", header.sh_info);
-    os << ident << format(".__section_entsize      %llu\n", static_cast<unsigned long long>(header.sh_entsize));
-    os << ident << format(".align                %llu \t// equivalent to set sh_addralign\n",
-                          static_cast<unsigned long long>(header.sh_addralign));
+    os << ident << std::format(".__section_name         0x{:x} \t// offset in .shstrtab\n", header.sh_name);
+    os << ident << std::format(".__section_type         {}\n", shTypeName(header.sh_type));
+    os << ident << std::format(".__section_flags        0x{:x}\n", header.sh_flags);
+    os << ident << std::format(".__section_addr         0x{:x}\n", header.sh_addr);
+    os << ident << std::format(".__section_offset       0x{:x} \t// maybe updated by assembler\n", header.sh_offset);
+    os << ident << std::format(".__section_size         0x{:x} \t// maybe updated by assembler\n", header.sh_size);
+    os << ident << std::format(".__section_link         {}\n", header.sh_link);
+    os << ident << std::format(".__section_info         0x{:x}\n", header.sh_info);
+    os << ident << std::format(".__section_entsize      {}\n", header.sh_entsize);
+    os << ident << std::format(".align                {} \t// equivalent to set sh_addralign\n", header.sh_addralign);
 }
 
 void CubinFile::writeCodeSectionAsm(std::ostream& os, const std::string& secName) {
@@ -442,8 +413,7 @@ void CubinFile::writeCodeSectionAsm(std::ostream& os, const std::string& secName
 
             const int idx = m_Arch->getInsIndexFromOffset(addr);
             if (idx - pidx != 1) {
-                CuAsmLogger::logWarning(format("!!! Missing instruction before %s:0x%llx", secName.c_str(),
-                                               static_cast<unsigned long long>(addr)));
+                CuAsmLogger::logWarning(std::format("!!! Missing instruction before {}:0x{:x}", secName, addr));
             }
 
             for (int iIns = pidx + 1; iIns < idx; ++iIns) {
@@ -500,14 +470,12 @@ void CubinFile::writeImplicitSectionAsm(std::ostream& os, const std::string& sec
     const std::string& data = section.data;
 
     if (secName == ".shstrtab" || secName == ".strtab") {
-        os << format("\t.section  \"%s\", %llu, %s\n", secName.c_str(), static_cast<unsigned long long>(header.sh_flags),
-                      shTypeName(header.sh_type).c_str());
+        os << std::format("\t.section  \"{}\", {}, {}\n", secName, header.sh_flags, shTypeName(header.sh_type));
         os << "\t// all strings in " << secName << " section will be kept as is.\n";
         writeSectionHeaderAsm(os, secName, header);
         os << stringBytes2Asm(data, secName);
     } else if (secName == ".symtab") {
-        os << format("\t.section  \"%s\", %llu, %s\n", secName.c_str(), static_cast<unsigned long long>(header.sh_flags),
-                      shTypeName(header.sh_type).c_str());
+        os << std::format("\t.section  \"{}\", {}, {}\n", secName, header.sh_flags, shTypeName(header.sh_type));
         os << "\t// all symbols in .symtab sections will be kept\n";
         os << "\t// but the symbol size may be changed accordingly\n";
         writeSectionHeaderAsm(os, secName, header);
@@ -521,20 +489,17 @@ void CubinFile::writeImplicitSectionAsm(std::ostream& os, const std::string& sec
             std::memcpy(&sym, data.data() + isym * symEntsize, sizeof(sym));
             const std::string symName = readCString(strtabData, sym.st_name);
 
-            os << format("    // Symbol[%llu] \"%s\": st_value=0x%llx st_size=%llu st_info=0x%x st_other=0x%x st_shndx=%u\n",
-                          static_cast<unsigned long long>(isym), symName.c_str(), static_cast<unsigned long long>(sym.st_value),
-                          static_cast<unsigned long long>(sym.st_size), sym.st_info, sym.st_other, sym.st_shndx);
+            os << std::format("    // Symbol[{}] \"{}\": st_value=0x{:x} st_size={} st_info=0x{:x} st_other=0x{:x} st_shndx={}\n", isym,
+                               symName, sym.st_value, sym.st_size, sym.st_info, sym.st_other, sym.st_shndx);
             os << bytes2Asm(data.substr(isym * symEntsize, symEntsize), 8, isym * symEntsize);
             os << "\n";
         }
     } else if (secName.empty()) {
         os << "\t// there will always be an empty section at index 0\n";
-        os << format("\t.section  \"%s\", %llu, %s\n", secName.c_str(), static_cast<unsigned long long>(header.sh_flags),
-                      shTypeName(header.sh_type).c_str());
+        os << std::format("\t.section  \"{}\", {}, {}\n", secName, header.sh_flags, shTypeName(header.sh_type));
         writeSectionHeaderAsm(os, secName, header);
     } else if (secName.starts_with(".rel")) {
-        os << format("\t.section  \"%s\", %llu, %s\n", secName.c_str(), static_cast<unsigned long long>(header.sh_flags),
-                      shTypeName(header.sh_type).c_str());
+        os << std::format("\t.section  \"{}\", {}, {}\n", secName, header.sh_flags, shTypeName(header.sh_type));
         os << "\t// all relocation sections will be dynamically generated by assembler \n";
         os << "\t// but most of the section header will be kept as is.\n";
         writeSectionHeaderAsm(os, secName, header);
@@ -575,9 +540,8 @@ void CubinFile::writeImplicitSectionAsm(std::ostream& os, const std::string& sec
                 symName = readCString(strtabData, sym.st_name);
             }
 
-            os << format("    // Relocation[%llu] : %s, r_offset=0x%llx r_type=%u r_addend=%lld\n",
-                          static_cast<unsigned long long>(irel), symName.c_str(), static_cast<unsigned long long>(rOffset), rType,
-                          static_cast<long long>(rAddend));
+            os << std::format("    // Relocation[{}] : {}, r_offset=0x{:x} r_type={} r_addend={}\n", irel, symName, rOffset, rType,
+                               rAddend);
         }
     } else {
         throw std::runtime_error("Unknown implicit section " + secName + " !");
@@ -587,19 +551,18 @@ void CubinFile::writeImplicitSectionAsm(std::ostream& os, const std::string& sec
 void CubinFile::writeSegmentHeaderAsm(std::ostream& os, const ELFIO::Elf64_Phdr& segHeader, const CubinElfSegment& segRange) const {
     CuAsmLogger::logSubroutine("Writing segment header...");
 
-    os << format("// Program segment %s, %u \n", segTypeName(segHeader.p_type).c_str(), segHeader.p_flags);
-    os << format("  .__segment  \"%s\", %u \n", segTypeName(segHeader.p_type).c_str(), segHeader.p_flags);
-    os << format("  .__segment_offset  0x%llx   \t\t// maybe updated by assembler \n", static_cast<unsigned long long>(segHeader.p_offset));
-    os << format("  .__segment_vaddr   0x%llx   \t\t// Seems always 0? \n", static_cast<unsigned long long>(segHeader.p_vaddr));
-    os << format("  .__segment_paddr   0x%llx   \t\t// ??? \n", static_cast<unsigned long long>(segHeader.p_paddr));
-    os << format("  .__segment_filesz  0x%llx   \t\t// file size, maybe updated by assembler \n",
-                 static_cast<unsigned long long>(segHeader.p_filesz));
-    os << format("  .__segment_memsz   0x%llx   \t\t// file size + nobits sections, maybe updated by assembler \n",
-                 static_cast<unsigned long long>(segHeader.p_memsz));
-    os << format("  .__segment_align     %llu   \t\t//  \n", static_cast<unsigned long long>(segHeader.p_align));
+    os << std::format("// Program segment {}, {} \n", segTypeName(segHeader.p_type), segHeader.p_flags);
+    os << std::format("  .__segment  \"{}\", {} \n", segTypeName(segHeader.p_type), segHeader.p_flags);
+    os << std::format("  .__segment_offset  0x{:x}   \t\t// maybe updated by assembler \n", segHeader.p_offset);
+    os << std::format("  .__segment_vaddr   0x{:x}   \t\t// Seems always 0? \n", segHeader.p_vaddr);
+    os << std::format("  .__segment_paddr   0x{:x}   \t\t// ??? \n", segHeader.p_paddr);
+    os << std::format("  .__segment_filesz  0x{:x}   \t\t// file size, maybe updated by assembler \n", segHeader.p_filesz);
+    os << std::format("  .__segment_memsz   0x{:x}   \t\t// file size + nobits sections, maybe updated by assembler \n",
+                       segHeader.p_memsz);
+    os << std::format("  .__segment_align     {}   \t\t//  \n", segHeader.p_align);
     if (segRange.hasRange) {
-        os << format("  .__segment_startsection    \"%s\"  \t\t// first section in this segment \n", segRange.startSection.c_str());
-        os << format("  .__segment_endsection      \"%s\"  \t\t// last  section in this segment \n", segRange.endSection.c_str());
+        os << std::format("  .__segment_startsection    \"{}\"  \t\t// first section in this segment \n", segRange.startSection);
+        os << std::format("  .__segment_endsection      \"{}\"  \t\t// last  section in this segment \n", segRange.endSection);
     }
     os << "\n";
 }
@@ -622,7 +585,7 @@ void CubinFile::saveAsCuAsm(const std::string& asmName) {
         fout << "  //-------------------------------------------------\n\n\n";
 
         for (const std::string& secName : m_ELFSectionOrder) {
-            fout << format("\n// --------------------- %-32s --------------------------\n", secName.c_str());
+            fout << std::format("\n// --------------------- {:<32} --------------------------\n", secName);
             if (m_AsmSectionMarkers.count(secName)) {
                 if (secName.starts_with(".text.")) {
                     writeCodeSectionAsm(fout, secName);
