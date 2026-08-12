@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -21,7 +22,7 @@ inline constexpr const char* PROGRAM_HEADER_TAG = "@PROGRAM_HEADER";
 /// kept in CubinFile.py's __mELFSections OrderedDict.
 struct CubinElfSection {
     ELFIO::Elf64_Shdr header{};
-    std::string data;
+    std::vector<std::byte> data;
 };
 
 /// One decoded ELF program-header entry plus the [start, end) section names it spans (only set

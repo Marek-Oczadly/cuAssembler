@@ -142,32 +142,6 @@ std::string readFileBytes(const std::string& path) {
     return ss.str();
 }
 
-/** @brief Strips leading/trailing whitespace, mirroring python's str.strip(). */
-std::string trim(const std::string& s) {
-    std::size_t begin = 0;
-    while (begin < s.size() && std::isspace(static_cast<unsigned char>(s[begin]))) {
-        ++begin;
-    }
-    std::size_t end = s.size();
-    while (end > begin && std::isspace(static_cast<unsigned char>(s[end - 1]))) {
-        --end;
-    }
-    return s.substr(begin, end - begin);
-}
-
-/** @brief Replaces every occurrence of a literal substring, mirroring python's str.replace(old, new). */
-std::string replaceAll(std::string s, const std::string& from, const std::string& to) {
-    if (from.empty()) {
-        return s;
-    }
-    std::size_t pos = 0;
-    while ((pos = s.find(from, pos)) != std::string::npos) {
-        s.replace(pos, from.size(), to);
-        pos += to.size();
-    }
-    return s;
-}
-
 /** @brief One ELF section's name and raw contents. */
 struct NamedElfSection {
     std::string name;

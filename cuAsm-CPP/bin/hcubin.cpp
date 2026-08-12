@@ -31,55 +31,15 @@
 #include <string>
 #include <vector>
 
+#include <CLI/CLI.hpp>
+
 #include "../CuAsm/CuAsmLogger.hpp"
 #include "../CuAsm/utils/CubinUtils.hpp"
+#include "cliCommon.hpp"
 
 namespace fs = std::filesystem;
 
 namespace {
-
-struct Args {
-    std::vector<std::string> infiles;
-    std::optional<std::string> outfile;
-    std::optional<std::string> logfile;
-    bool verbose = false;
-    bool quiet = false;
-};
-
-/**
- * @brief Verifies that an input file exists.
- * @param fname Path of the input file to check.
- * @return True if the file exists; false (after printing a diagnostic) otherwise.
- **/
-bool checkInFileExistence(const std::string& fname) {
-    if (!fs::is_regular_file(fname)) {
-        std::cout << "IOError! Input file \"" << fname << "\" not found!" << std::endl;
-        return false;
-    }
-    return true;
-}
-
-/**
- * @brief Checks whether an output file already exists and, if so, backs it up before it is overwritten.
- * @param fname Path of the output file to check.
- * @param doBackup If the file exists, rename it to "fname~" before returning; otherwise leave it untouched.
- * @return True on success; false (after printing a diagnostic) if fname is an existing directory.
- **/
-bool checkOutFileBackup(const std::string& fname, bool doBackup = true) {
-    if (fs::exists(fname)) {
-        if (fs::is_directory(fname)) {
-            std::cout << "IOError!!! Output file \"" << fname << "\" is an existing directory!" << std::endl;
-            return false;
-        } else {
-            if (doBackup) {
-                std::string bname = fname + "~";
-                CuAsm::CuAsmLogger::logWarning("Backup existing file " + fname + " to " + bname + "...");
-                fs::rename(fname, bname);
-            }
-        }
-    }
-    return true;
-}
 
 /**
  * @brief Hacks a cubin's cache-policy desc bit so it is shown explicitly wherever needed, writing
@@ -100,58 +60,6 @@ std::optional<bool> hcubin(const std::string& fin, std::optional<std::string> fo
     return CuAsm::fixCubinDesc(fin, outname);
 }
 
-/**
- * @brief Prints the command-line usage message.
- * @param prog Program name to display in the usage message.
- **/
-void printUsage(const std::string& prog) {
-    std::cout << "Usage: " << prog << " infile [outfile] [-o outfile] [-f logfile] [-v|-q]" << std::endl;
-}
-
-/**
- * @brief Parses the command-line arguments, mirroring the original argparse-based CLI
- *        (positional infile[s], -o/--output, -f/--logfile, -v/--verbose, -q/--quiet).
- * @param argc Argument count, as passed to main().
- * @param argv Argument vector, as passed to main().
- * @return The parsed Args, with infiles containing either 1 (input only) or 2 (input, output) entries;
- *         std::nullopt if the arguments were invalid (usage has already been printed).
- **/
-std::optional<Args> parseArgs(int argc, char** argv) {
-    Args args;
-    const std::string prog = argc > 0 ? fs::path(argv[0]).filename().string() : "hcubin";
-
-    for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
-
-        if (arg == "-o" || arg == "--output") {
-            if (i + 1 >= argc) {
-                printUsage(prog);
-                return std::nullopt;
-            }
-            args.outfile = argv[++i];
-        } else if (arg == "-f" || arg == "--logfile") {
-            if (i + 1 >= argc) {
-                printUsage(prog);
-                return std::nullopt;
-            }
-            args.logfile = argv[++i];
-        } else if (arg == "-v" || arg == "--verbose") {
-            args.verbose = true;
-        } else if (arg == "-q" || arg == "--quiet") {
-            args.quiet = true;
-        } else {
-            args.infiles.push_back(arg);
-        }
-    }
-
-    if (args.infiles.empty() || args.infiles.size() > 2) {
-        std::cout << "The infile should be of length 1 (second infered by replacing file extension) or 2 !!!" << std::endl;
-        return std::nullopt;
-    }
-
-    return args;
-}
-
 } // namespace
 
 /**
@@ -159,24 +67,32 @@ std::optional<Args> parseArgs(int argc, char** argv) {
  *        cache-policy desc bit of the requested cubin.
  * @param argc Argument count.
  * @param argv Argument vector.
- * @return 0 on success; -1 on any argument, I/O, or hack error.
+ * @return 0 on success; -1 on any I/O or hack error; CLI11's own exit code on a bad command
+ *         line (see CLI11_PARSE).
  **/
 int main(int argc, char** argv) {
-    std::optional<Args> argsOpt = parseArgs(argc, argv);
-    if (!argsOpt.has_value()) {
-        return -1;
-    }
-    Args& args = *argsOpt;
+    CLI::App app{"Hack the sm8x cubin with valid cache-policy desc bit set."};
 
-    std::string infile;
-    std::optional<std::string> outfile;
+    std::vector<std::string> infiles;
+    std::string outfile;
+    std::string logfile;
+    bool verbose = false;
+    bool quiet = false;
 
-    if (args.infiles.size() == 1) {
-        infile = args.infiles[0];
-        outfile = args.outfile;
-    } else {
-        infile = args.infiles[0];
-        outfile = args.infiles[1];
+    app.add_option("infiles", infiles, "Input file, optionally followed by an output file")->required()->expected(1, 2);
+    CLI::Option* outOpt = app.add_option("-o,--output", outfile, "Output file");
+    CLI::Option* logOpt = app.add_option("-f,--logfile", logfile, "Log file");
+    app.add_flag("-v,--verbose", verbose, "Verbose output");
+    app.add_flag("-q,--quiet", quiet, "Quiet output");
+
+    CLI11_PARSE(app, argc, argv);
+
+    std::string infile = infiles[0];
+    std::optional<std::string> outfileOpt;
+    if (infiles.size() == 2) {
+        outfileOpt = infiles[1];
+    } else if (outOpt->count() > 0) {
+        outfileOpt = outfile;
     }
 
     if (!checkInFileExistence(infile)) {
@@ -185,10 +101,10 @@ int main(int argc, char** argv) {
 
     int stdoutLevel;
     int fileLevel;
-    if (args.verbose) {
+    if (verbose) {
         stdoutLevel = 0;
         fileLevel = 0;
-    } else if (args.quiet) {
+    } else if (quiet) {
         stdoutLevel = static_cast<int>(CuAsm::LogLevel::Error);
         fileLevel = 25;
     } else {
@@ -196,13 +112,13 @@ int main(int argc, char** argv) {
         fileLevel = static_cast<int>(CuAsm::LogLevel::Info);
     }
 
-    if (args.logfile.has_value()) {
-        CuAsm::CuAsmLogger::initLogger(args.logfile.value(), fileLevel, stdoutLevel);
+    if (logOpt->count() > 0) {
+        CuAsm::CuAsmLogger::initLogger(logfile, fileLevel, stdoutLevel);
     } else {
         CuAsm::CuAsmLogger::initLogger("", fileLevel, stdoutLevel, "cuasm", std::size_t(1) << 30, 3, false);
     }
 
-    if (!hcubin(infile, outfile).has_value()) {
+    if (!hcubin(infile, outfileOpt).has_value()) {
         return -1;
     }
 

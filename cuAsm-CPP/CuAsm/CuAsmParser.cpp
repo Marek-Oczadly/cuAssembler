@@ -11,6 +11,7 @@
 #include <map>
 #include <optional>
 #include <regex>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
@@ -79,41 +80,8 @@ private:
     std::unordered_map<std::string, std::size_t> m_index;
 };
 
-/** @brief Trims ASCII whitespace from both ends. @param s String to trim. @return Trimmed string. */
-std::string trim(const std::string& s) {
-    std::size_t a = s.find_first_not_of(" \t\r\n");
-    if (a == std::string::npos) {
-        return "";
-    }
-    std::size_t b = s.find_last_not_of(" \t\r\n");
-    return s.substr(a, b - a + 1);
-}
-
-/** @brief Trims any of the given characters from both ends, mirroring python's str.strip(chars). */
-std::string stripChars(const std::string& s, const std::string& chars) {
-    std::size_t a = s.find_first_not_of(chars);
-    if (a == std::string::npos) {
-        return "";
-    }
-    std::size_t b = s.find_last_not_of(chars);
-    return s.substr(a, b - a + 1);
-}
-
 /** @brief Strips a single pair of surrounding double quotes, if present. */
-std::string stripQuotes(const std::string& s) { return stripChars(s, "\""); }
-
-/** @brief Splits a string on a delimiter char, keeping empty tokens, mirroring python str.split. */
-std::vector<std::string> splitOn(const std::string& s, char delim) {
-    std::vector<std::string> out;
-    std::size_t start = 0;
-    for (std::size_t i = 0; i <= s.size(); ++i) {
-        if (i == s.size() || s[i] == delim) {
-            out.push_back(s.substr(start, i - start));
-            start = i + 1;
-        }
-    }
-    return out;
-}
+std::string stripQuotes(const std::string& s) { return trimChars(s, "\""); }
 
 /** @brief Splits on comma with surrounding whitespace trimmed, mirroring re.split(r'\s*,\s*', ...). */
 std::vector<std::string> splitArgs(const std::string& farg) {
@@ -1262,9 +1230,11 @@ void CuAsmParser::Impl::parseKernelText(CuAsmSection& section, int lineStart, in
         ++insIdx;
     }
 
-    std::string codebytes = kasm.genCode();
+    // CuAsmSection's own buffer is still std::string-typed (a separate, unconverted binary-as-
+    // string pocket), so the newly byte-typed kernel code is adapted back at this boundary.
+    const std::vector<std::byte> codebytes = kasm.genCode();
     section.seek(0, 0);
-    section.emitBytes(codebytes);
+    section.emitBytes(std::string(reinterpret_cast<const char*>(codebytes.data()), codebytes.size()));
 
     std::string kname = section.name.substr(6);
     CuAsmSection* infoSec = mSectionDict.at(".nv.info." + kname).get();
@@ -1849,7 +1819,7 @@ std::pair<std::int64_t, bool> CuAsmParser::Impl::evalVar(const std::string& var)
 
 ExprResult CuAsmParser::Impl::evalExpr(const std::string& expr) {
     if (expr.starts_with("index@")) {
-        std::string symname = stripChars(expr.substr(6), " ()");
+        std::string symname = trimChars(expr.substr(6), " ()");
         auto index = getSymbolIdx(symname);
         doAssert(index.has_value(), "Unknown symbol \"" + symname + "\"!!!");
         ExprResult r;
@@ -1858,7 +1828,7 @@ ExprResult CuAsmParser::Impl::evalExpr(const std::string& expr) {
         return r;
     }
 
-    std::string rexpr = stripChars(expr, "`() ");
+    std::string rexpr = trimChars(expr, "`() ");
     static const std::regex pExpr(R"(([.\w$@]+)\s*([+-])*\s*([.\w$@]+)*)");
     std::smatch m;
     doAssert(matchAtStart(rexpr, pExpr, m), "Unknown expr " + expr + " !!!");
@@ -2040,7 +2010,15 @@ void CuAsmParser::Impl::emitTypedBytes(const std::string& dtype, const std::vect
 }
 
 std::string CuAsmParser::Impl::genSectionPaddingBytes(CuAsmSection& sec, std::uint64_t padSize) {
-    std::string padbytes = sec.name.starts_with(".text") ? mArch->getPadBytes() : std::string(1, '\0');
+    // CuAsmSection's own buffer is still std::string-typed (a separate, unconverted binary-as-
+    // string pocket), so the byte-typed arch pad sequence is adapted back at this boundary.
+    std::string padbytes;
+    if (sec.name.starts_with(".text")) {
+        const std::span<const std::byte> pad = mArch->getPadBytes();
+        padbytes.assign(reinterpret_cast<const char*>(pad.data()), pad.size());
+    } else {
+        padbytes.assign(1, '\0');
+    }
     if (padbytes.empty() || padSize % padbytes.size() != 0) {
         throw std::runtime_error("Invalid padding size for section " + sec.name);
     }
@@ -2103,7 +2081,7 @@ std::string CuAsmParser::Impl::checkNVInfoOffsetLabels(CuAsmSection* section, co
     doAssert(section != nullptr && section->name.starts_with(".text"), "CUASM_OFFSET_LABEL should be defined in a text section!");
 
     std::string kname = section->name.substr(6);
-    std::vector<std::string> vs = splitOn(labelname.substr(1), '.');
+    std::vector<std::string> vs = splitChar(labelname.substr(1), '.');
     doAssert(vs.size() == 4, "Offset label should be in form: .CUASM_OFFSET_LABEL.{SectionName}.{NVInfoAttributeName}.{Identifier}");
     doAssert(vs[1] == kname, "CUASM_OFFSET_LABEL should include kernel name in second dot part!");
 
@@ -2204,7 +2182,7 @@ void CuAsmParser::Impl::saveCubinCmp(const std::string& cubinName, const std::st
         fasm << dumpShdr(secPtr->getHeaderStruct()) << "\n";
         bool isNobits = secPtr->header.type && resolveHeaderInt(*secPtr->header.type) == ELFIO::SHT_NOBITS;
         if (!isNobits) {
-            fasm << bytes2Asm(secPtr->getData()) << "\n\n";
+            fasm << bytes2Asm(std::as_bytes(std::span(secPtr->getData()))) << "\n\n";
         } else {
             fasm << "\n";
         }
@@ -2223,7 +2201,7 @@ void CuAsmParser::Impl::saveCubinCmp(const std::string& cubinName, const std::st
                              sec->get_type(), sec->get_flags(), sec->get_offset(), sec->get_size(), sec->get_link(),
                              sec->get_info(), sec->get_addr_align(), sec->get_entry_size());
         if (sec->get_type() != ELFIO::SHT_NOBITS) {
-            fbin << bytes2Asm(std::string(sec->get_data(), sec->get_size())) << "\n\n";
+            fbin << bytes2Asm(std::as_bytes(std::span(sec->get_data(), sec->get_size()))) << "\n\n";
         } else {
             fbin << "\n";
         }
@@ -2240,101 +2218,97 @@ void CuAsmParser::Impl::saveCubinCmp(const std::string& cubinName, const std::st
 }
 
 void CuAsmParser::Impl::dispFixupList() const {
-    std::cout << "Fixup list:\n";
+    CuAsmLogger::logLiteral("Fixup list:");
     if (mFixupList.empty()) {
-        std::cout << "    []\n";
+        CuAsmLogger::logLiteral("    []");
     }
     for (std::size_t i = 0; i < mFixupList.size(); ++i) {
-        std::cout << std::format("Fixup {:3}: {}\n", i, mFixupList[i]->toString());
+        CuAsmLogger::logLiteral(std::format("Fixup {:3}: {}", i, mFixupList[i]->toString()));
     }
-    std::cout << std::endl;
 }
 
 void CuAsmParser::Impl::dispRelocationList() const {
-    std::cout << "Relocation list:\n";
+    CuAsmLogger::logLiteral("Relocation list:");
     if (mRelList.empty()) {
-        std::cout << "    No relocations.\n";
+        CuAsmLogger::logLiteral("    No relocations.");
     }
     for (std::size_t i = 0; i < mRelList.size(); ++i) {
-        std::cout << std::format("Relocation {:3}: {}\n", i, mRelList[i]->toString());
+        CuAsmLogger::logLiteral(std::format("Relocation {:3}: {}", i, mRelList[i]->toString()));
     }
-    std::cout << std::endl;
 }
 
 void CuAsmParser::Impl::dispSectionList() const {
-    std::cout << "Section list:\n";
+    CuAsmLogger::logLiteral("Section list:");
     if (mSectionDict.empty()) {
-        std::cout << "    No sections found.\n";
+        CuAsmLogger::logLiteral("    No sections found.");
         return;
     }
 
-    std::cout << " Idx  Offset    Size    ES   AL  Type           Flags    Link      Info  Name\n";
+    CuAsmLogger::logLiteral(" Idx  Offset    Size    ES   AL  Type           Flags    Link      Info  Name");
     std::size_t i = 0;
     for (const auto& [sname, secPtr] : mSectionDict) {
         const ELFIO::Elf64_Shdr& h = secPtr->getHeaderStruct();
-        std::cout << std::format("{:4x}  {:6x}  {:6x}  {:4x}  {:3x}  {:12x}  {:6x}  {:6x}  {:8x}  {}\n", i, h.sh_offset, h.sh_size,
-                                  h.sh_entsize, secPtr->addralign, h.sh_type, h.sh_flags, h.sh_link, h.sh_info, sname);
+        CuAsmLogger::logLiteral(std::format("{:4x}  {:6x}  {:6x}  {:4x}  {:3x}  {:12x}  {:6x}  {:6x}  {:8x}  {}", i, h.sh_offset,
+                                             h.sh_size, h.sh_entsize, secPtr->addralign, h.sh_type, h.sh_flags, h.sh_link, h.sh_info,
+                                             sname));
         ++i;
     }
-    std::cout << std::endl;
 }
 
 void CuAsmParser::Impl::dispSymbolDict() const {
-    std::cout << "\nSymbols:\n";
+    CuAsmLogger::logLiteral("Symbols:");
     std::size_t i = 0;
     for (const auto& [sname, symPtr] : mSymbolDict) {
-        std::cout << "Symbol " << std::setw(3) << i << ": " << symPtr->toString() << "\n";
+        CuAsmLogger::logLiteral(std::format("Symbol {:3}: {}", i, symPtr->toString()));
         ++i;
     }
-    std::cout << std::endl;
 }
 
 void CuAsmParser::Impl::dispSymtabDict() const {
-    std::cout << "\nSymtab:\n";
+    CuAsmLogger::logLiteral("Symtab:");
     for (const auto& [s, idAndSym] : mSymtabDict) {
-        std::cout << "Symbol " << std::setw(3) << idAndSym.first << " (" << s << ")\n";
+        CuAsmLogger::logLiteral(std::format("Symbol {:3} ({})", idAndSym.first, s));
         if (mSymbolDict.contains(s)) {
-            std::cout << "    " << mSymbolDict.at(s)->toString() << "\n";
+            CuAsmLogger::logLiteral("    " + mSymbolDict.at(s)->toString());
         }
     }
-    std::cout << std::endl;
 }
 
 void CuAsmParser::Impl::dispLabelDict() const {
-    std::cout << "\nLabels: \n";
+    CuAsmLogger::logLiteral("Labels:");
     std::size_t i = 0;
     for (const auto& [lname, labelPtr] : mLabelDict) {
-        std::cout << "Label " << std::setw(3) << i << ": " << labelPtr->toString() << "\n";
+        CuAsmLogger::logLiteral(std::format("Label {:3}: {}", i, labelPtr->toString()));
         ++i;
     }
-    std::cout << std::endl;
 }
 
 void CuAsmParser::Impl::dispSegmentHeader() const {
-    std::cout << "Segment headers:\n";
+    CuAsmLogger::logLiteral("Segment headers:");
     for (const auto& segPtr : mSegmentList) {
-        std::cout << dumpPhdr(segPtr->getHeaderStruct()) << "\n";
+        CuAsmLogger::logLiteral(dumpPhdr(segPtr->getHeaderStruct()));
     }
 }
 
 void CuAsmParser::Impl::dispFileHeader() const {
-    std::cout << "File header:\n" << dumpEhdr(mCuAsmFile.getFileHeaderStruct()) << std::endl;
+    CuAsmLogger::logLiteral("File header:");
+    CuAsmLogger::logLiteral(dumpEhdr(mCuAsmFile.getFileHeaderStruct()));
 }
 
 void CuAsmParser::Impl::dispTables() const {
-    std::cout << ".shstrtab:\n";
+    CuAsmLogger::logLiteral(".shstrtab:");
     for (const auto& [idx, str] : mShstrtabDict) {
-        std::cout << std::format("0x{:x}\t{}\n", idx, str);
+        CuAsmLogger::logLiteral(std::format("0x{:x}\t{}", idx, str));
     }
-    std::cout << ".strtab:\n";
+    CuAsmLogger::logLiteral(".strtab:");
     for (const auto& [idx, str] : mStrtabDict) {
-        std::cout << std::format("0x{:x}\t{}\n", idx, str);
+        CuAsmLogger::logLiteral(std::format("0x{:x}\t{}", idx, str));
     }
-    std::cout << ".symtab\n";
+    CuAsmLogger::logLiteral(".symtab");
     std::size_t i = 0;
     for (const auto& [s, idAndSym] : mSymtabDict) {
         (void)idAndSym;
-        std::cout << std::setw(3) << i << "\t" << s << "\n";
+        CuAsmLogger::logLiteral(std::format("{:3}\t{}", i, s));
         ++i;
     }
 }

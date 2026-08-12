@@ -1,9 +1,11 @@
 #pragma once
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <ostream>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -119,7 +121,7 @@ std::map<std::string, std::pair<int, int>> splitAsmSection(const std::vector<std
  * @param width Number of bytes to display per line.
  * @return The generated assembly text.
  **/
-std::string stringBytes2Asm(const std::string& ss, const std::string& label = "", int width = 8);
+std::string stringBytes2Asm(std::span<const std::byte> ss, const std::string& label = "", int width = 8);
 
 /**
  * @brief Converts raw bytes into assembly ".byte" directives, mirroring CuAsm.common.bytes2Asm.
@@ -129,7 +131,7 @@ std::string stringBytes2Asm(const std::string& ss, const std::string& label = ""
  * @param ident Indentation prepended to each line.
  * @return The generated assembly text.
  **/
-std::string bytes2Asm(const std::string& bs, int width = 8, std::uint64_t addrOffset = 0, const std::string& ident = "    ");
+std::string bytes2Asm(std::span<const std::byte> bs, int width = 8, std::uint64_t addrOffset = 0, const std::string& ident = "    ");
 
 /**
  * @brief Reads a binary file and writes its contents as assembly ".byte" directives, mirroring
@@ -146,6 +148,56 @@ void bytesdump(const std::string& inname, const std::string& outname);
  * @return The comment-free, whitespace-collapsed, trimmed line.
  **/
 std::string stripComments(const std::string& s);
+
+/**
+ * @brief Trims ASCII whitespace from both ends, mirroring python's str.strip().
+ * @param s String to trim.
+ * @return The trimmed string.
+ **/
+std::string trim(const std::string& s);
+
+/**
+ * @brief Trims ASCII whitespace from the right end only, mirroring python's str.rstrip().
+ * @param s String to trim.
+ * @return The trimmed string.
+ **/
+std::string rtrim(const std::string& s);
+
+/**
+ * @brief Trims any of the given characters from both ends, mirroring python's str.strip(chars).
+ * @param s String to trim.
+ * @param chars Characters to strip.
+ * @return The trimmed string.
+ **/
+std::string trimChars(const std::string& s, const std::string& chars);
+
+/**
+ * @brief Trims any of the given characters from the left end only, mirroring python's
+ *        str.lstrip(chars).
+ * @param s String to trim.
+ * @param chars Characters to strip.
+ * @return The trimmed string.
+ **/
+std::string ltrimChars(const std::string& s, const std::string& chars);
+
+/**
+ * @brief Splits on a single-char delimiter, preserving empty tokens, mirroring python's
+ *        str.split(sep).
+ * @param s String to split.
+ * @param delim Delimiter character.
+ * @return The split tokens.
+ **/
+std::vector<std::string> splitChar(const std::string& s, char delim);
+
+/**
+ * @brief Replaces every non-overlapping occurrence of a literal substring, mirroring python's
+ *        str.replace(old, new). A no-op (returns `s` unchanged) if `from` is empty.
+ * @param s String to search within.
+ * @param from Substring to replace.
+ * @param to Replacement text.
+ * @return The result of the replacement.
+ **/
+std::string replaceAll(const std::string& s, const std::string& from, const std::string& to);
 
 /**
  * @brief python repr() of a plain string: single-quoted, with `'`/`\` backslash-escaped.

@@ -9,84 +9,14 @@
 #include <sstream>
 #include <stdexcept>
 
+#include <boost/regex.hpp>
+
 #include "common.hpp"
 #include "utils/BigNum.hpp"
 
 namespace CuAsm {
 
 namespace {
-
-// ---------------------------------------------------------------------------------------------
-// Small string helpers mirroring python str methods used throughout CuInsParser.py.
-// ---------------------------------------------------------------------------------------------
-
-/** @brief Strips leading/trailing whitespace, mirroring python's str.strip(). */
-std::string strip(const std::string& s) {
-    std::size_t begin = 0;
-    while (begin < s.size() && std::isspace(static_cast<unsigned char>(s[begin]))) {
-        ++begin;
-    }
-    std::size_t end = s.size();
-    while (end > begin && std::isspace(static_cast<unsigned char>(s[end - 1]))) {
-        --end;
-    }
-    return s.substr(begin, end - begin);
-}
-
-/** @brief Strips any of the given chars from both ends, mirroring python's str.strip(chars). */
-std::string stripChars(const std::string& s, const std::string& chars) {
-    std::size_t begin = 0;
-    while (begin < s.size() && chars.find(s[begin]) != std::string::npos) {
-        ++begin;
-    }
-    std::size_t end = s.size();
-    while (end > begin && chars.find(s[end - 1]) != std::string::npos) {
-        --end;
-    }
-    return s.substr(begin, end - begin);
-}
-
-/** @brief Strips any of the given chars from the left end only, mirroring python's str.lstrip(chars). */
-std::string lstripChars(const std::string& s, const std::string& chars) {
-    std::size_t begin = 0;
-    while (begin < s.size() && chars.find(s[begin]) != std::string::npos) {
-        ++begin;
-    }
-    return s.substr(begin);
-}
-
-/** @brief Splits on a single-char delimiter, preserving empty tokens, mirroring python's str.split(sep). */
-std::vector<std::string> splitChar(const std::string& s, char delim) {
-    std::vector<std::string> out;
-    std::size_t start = 0;
-    for (std::size_t i = 0; i <= s.size(); ++i) {
-        if (i == s.size() || s[i] == delim) {
-            out.push_back(s.substr(start, i - start));
-            start = i + 1;
-        }
-    }
-    return out;
-}
-
-/** @brief Replaces every occurrence of a literal substring, mirroring python's str.replace(old, new). */
-std::string replaceAll(const std::string& s, const std::string& from, const std::string& to) {
-    if (from.empty()) {
-        return s;
-    }
-    std::string out;
-    std::size_t pos = 0;
-    for (;;) {
-        const std::size_t found = s.find(from, pos);
-        if (found == std::string::npos) {
-            out += s.substr(pos);
-            break;
-        }
-        out += s.substr(pos, found - pos);
-        out += to;
-        pos = found + from.size();
-    }
-    return out;
-}
 
 /** @brief Parses a (possibly '-'-prefixed) "0x..." hex literal to a signed integer, mirroring python's
  *         int(s, 16). Parses the magnitude as unsigned 64-bit so literals with the top bit set (e.g.
@@ -109,31 +39,9 @@ std::string firstDotSegment(const std::string& s) {
 
 // ---------------------------------------------------------------------------------------------
 // Two of the original patterns rely on lookbehind assertions, which std::regex (ECMAScript
-// grammar) does not support. Both are reimplemented as small manual scans instead.
+// grammar) does not support but Boost.Regex's Perl-compatible grammar does, letting these match
+// the original Python `re` patterns directly instead of hand-emulating them with manual scans.
 // ---------------------------------------------------------------------------------------------
-
-/** @brief Applies a regex_replace, except where the match is immediately preceded by '.', mirroring
- *         the negative lookbehind in p_ConstTrDict's `r'(?<!\.)\bRZ\b'` entry. */
-std::string regexReplaceUnlessPrecededByDot(const std::string& s, const std::regex& re, const std::string& replacement) {
-    std::string out;
-    std::size_t lastPos = 0;
-    auto it = std::sregex_iterator(s.begin(), s.end(), re);
-    const auto end = std::sregex_iterator();
-    for (; it != end; ++it) {
-        const std::smatch& match = *it;
-        const std::size_t pos = static_cast<std::size_t>(match.position(0));
-        const std::size_t len = static_cast<std::size_t>(match.length(0));
-        out += s.substr(lastPos, pos - lastPos);
-        if (pos > 0 && s[pos - 1] == '.') {
-            out += match.str(0);
-        } else {
-            out += replacement;
-        }
-        lastPos = pos + len;
-    }
-    out += s.substr(lastPos);
-    return out;
-}
 
 /** @brief Whether c counts as a "word or '?'" character for insignificant-space purposes. */
 bool isWordOrQ(char c) {
@@ -160,25 +68,11 @@ std::string removeInsignificantSpaces(const std::string& s) {
     return out;
 }
 
-/** @brief Inserts a '+' before every "-0x" not already preceded by '[' or '+', mirroring the
- *         negative lookbehind in __parseAddress's `re.sub(r'(?<![\[\+])-0x', '+-0x', s)`. */
-std::string insertPlusBeforeNegHex(const std::string& s) {
-    std::string out;
-    out.reserve(s.size() + 4);
-    for (std::size_t i = 0; i < s.size();) {
-        if (i + 2 < s.size() && s[i] == '-' && s[i + 1] == '0' && s[i + 2] == 'x') {
-            const bool precededByBracketOrPlus = !out.empty() && (out.back() == '[' || out.back() == '+');
-            if (!precededByBracketOrPlus) {
-                out += '+';
-            }
-            out += "-0x";
-            i += 3;
-        } else {
-            out += s[i];
-            ++i;
-        }
-    }
-    return out;
+/** @brief Regex for a "-0x" not already preceded by '[' or '+', mirroring the negative lookbehind
+ *         in __parseAddress's `re.sub(r'(?<![\[\+])-0x', '+-0x', s)`. */
+const boost::regex& negHexRe() {
+    static const boost::regex re(R"((?<![\[\+])-0x)");
+    return re;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -196,8 +90,10 @@ const std::regex& sbSetRe() {
     static const std::regex re(R"(\{(\d,)*\d\})");
     return re;
 }
-const std::regex& rzRe() {
-    static const std::regex re(R"(\bRZ\b)");
+/** @brief Mirrors p_ConstTrDict's negative-lookbehind entry `r'(?<!\.)\bRZ\b'` directly, instead of
+ *         the hand-emulated "match then check preceding char" scan std::regex would have needed. */
+const boost::regex& rzRe() {
+    static const boost::regex re(R"((?<!\.)\bRZ\b)");
     return re;
 }
 const std::regex& urzRe() {
@@ -357,7 +253,7 @@ std::tuple<std::string, std::vector<std::int64_t>, std::vector<std::string>> CuI
                                                                                                    std::uint64_t addr,
                                                                                                    const BigInt& code) {
     reset();
-    m_InsString = strip(s);
+    m_InsString = trim(s);
     m_CTrString = constTr(m_InsString);
 
     std::smatch m;
@@ -403,7 +299,7 @@ std::tuple<std::string, std::vector<std::int64_t>, std::vector<std::string>> CuI
 std::string CuInsParser::constTr(const std::string& sIn) const {
     std::string s = stripComments(sIn);
 
-    s = regexReplaceUnlessPrecededByDot(s, rzRe(), "R255");
+    s = boost::regex_replace(s, rzRe(), "R255");
     s = std::regex_replace(s, urzRe(), "UR63");
     s = std::regex_replace(s, ptRe(), "P7");
     s = std::regex_replace(s, uptRe(), "UP7");
@@ -418,11 +314,11 @@ std::string CuInsParser::constTr(const std::string& sIn) const {
     s = std::regex_replace(s, whiteSpaceRe(), " ");
     s = removeInsignificantSpaces(s);
 
-    return stripChars(s, " {};");
+    return trimChars(s, " {};");
 }
 
 std::string CuInsParser::preprocessOperands(const std::string& sIn) const {
-    std::string s = strip(sIn);
+    std::string s = trim(sIn);
     if (addrFuncs().count(m_InsOp) > 0) {
         std::smatch m;
         if (std::regex_search(s, m, rImmeAddrRe())) {
@@ -508,7 +404,7 @@ std::int64_t CuInsParser::parsePred(const std::string& s) {
         return 7;
     }
 
-    const IndexedToken tok = parseIndexedToken(stripChars(s, "@! "));
+    const IndexedToken tok = parseIndexedToken(trimChars(s, "@! "));
     if (s.find('!') != std::string::npos) {
         return tok.val[0] + 8;
     }
@@ -617,7 +513,7 @@ CuInsParser::OperandParse CuInsParser::parseDescAddress(const std::string& s) {
 }
 
 std::string CuInsParser::transScoreboardSet(const std::string& s) const {
-    const std::vector<std::string> parts = splitChar(stripChars(s, "{}"), ',');
+    const std::vector<std::string> parts = splitChar(trimChars(s, "{}"), ',');
     std::int64_t v = 0;
     for (const std::string& bs : parts) {
         v += (std::int64_t(1) << std::stoll(bs, nullptr, 10));
@@ -626,8 +522,8 @@ std::string CuInsParser::transScoreboardSet(const std::string& s) const {
 }
 
 CuInsParser::OperandParse CuInsParser::parseAddress(const std::string& s) {
-    const std::string withPlus = insertPlusBeforeNegHex(s);
-    const std::vector<std::string> tokens = splitChar(stripChars(withPlus, "[]"), '+');
+    const std::string withPlus = boost::regex_replace(s, negHexRe(), "+-0x");
+    const std::vector<std::string> tokens = splitChar(trimChars(withPlus, "[]"), '+');
 
     struct Entry {
         std::vector<std::int64_t> val;
@@ -756,7 +652,7 @@ CuInsParser::ModifierSplit CuInsParser::stripImmeModifier(const std::string& s) 
 
     std::vector<std::string> modis;
     if (!modisRaw.empty()) {
-        modis = splitChar(lstripChars(modisRaw, "."), '.');
+        modis = splitChar(ltrimChars(modisRaw, "."), '.');
     }
 
     return {sval, modis};

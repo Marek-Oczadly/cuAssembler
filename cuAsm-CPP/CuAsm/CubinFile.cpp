@@ -1,10 +1,13 @@
 #include "CubinFile.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <iterator>
 #include <regex>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 
@@ -22,12 +25,16 @@ namespace CuAsm {
 namespace {
 
 /** @brief Reads a NUL-terminated string out of a string table at a given byte offset. */
-std::string readCString(const std::string& strtab, std::uint32_t offset) {
+std::string readCString(std::span<const std::byte> strtab, std::uint32_t offset) {
     if (offset >= strtab.size()) {
         return "";
     }
-    const std::size_t end = strtab.find('\0', offset);
-    return strtab.substr(offset, (end == std::string::npos ? strtab.size() : end) - offset);
+    const auto begin = strtab.begin() + static_cast<std::ptrdiff_t>(offset);
+    const auto end = std::find(begin, strtab.end(), std::byte{0});
+    std::string out;
+    out.reserve(static_cast<std::size_t>(end - begin));
+    std::transform(begin, end, std::back_inserter(out), [](std::byte b) { return static_cast<char>(b); });
+    return out;
 }
 
 /** @brief Maps an ELF e_type value to its symbolic name, mirroring pyelftools' ENUM_E_TYPE. */
@@ -179,7 +186,8 @@ void CubinFile::loadCubin(const std::string& binName) {
             CubinElfSection section;
             section.header = shdr;
             if (shdr.sh_type != ELFIO::SHT_NOBITS && shdr.sh_size > 0) {
-                section.data.assign(elfioSection->get_data(), static_cast<std::size_t>(shdr.sh_size));
+                const auto rawBytes = std::as_bytes(std::span(elfioSection->get_data(), static_cast<std::size_t>(shdr.sh_size)));
+                section.data.assign(rawBytes.begin(), rawBytes.end());
             }
             m_ELFSections[secName] = std::move(section);
             m_ELFSectionOrder.push_back(secName);
@@ -385,7 +393,9 @@ void CubinFile::writeCodeSectionAsm(std::ostream& os, const std::string& secName
         throw std::runtime_error("Info section (" + nvinfoSecName + ") not found!");
     }
 
-    CuNVInfo nvinfo(std::vector<std::uint8_t>(nvinfoIt->second.data.begin(), nvinfoIt->second.data.end()),
+    const std::vector<std::byte>& nvInfoData = nvinfoIt->second.data;
+    CuNVInfo nvinfo(std::vector<std::uint8_t>(reinterpret_cast<const std::uint8_t*>(nvInfoData.data()),
+                                               reinterpret_cast<const std::uint8_t*>(nvInfoData.data()) + nvInfoData.size()),
                     m_Arch->getVersionString());
     const std::map<std::uint64_t, std::string> offsetLabels = nvinfo.getOffsetLabelDict(kname);
 
@@ -467,7 +477,7 @@ void CubinFile::writeImplicitSectionAsm(std::ostream& os, const std::string& sec
 
     const CubinElfSection& section = m_ELFSections.at(secName);
     const ELFIO::Elf64_Shdr& header = section.header;
-    const std::string& data = section.data;
+    const std::span<const std::byte> data = section.data;
 
     if (secName == ".shstrtab" || secName == ".strtab") {
         os << std::format("\t.section  \"{}\", {}, {}\n", secName, header.sh_flags, shTypeName(header.sh_type));
@@ -482,7 +492,8 @@ void CubinFile::writeImplicitSectionAsm(std::ostream& os, const std::string& sec
 
         const std::uint64_t symEntsize = header.sh_entsize;
         const std::uint64_t nsym = symEntsize == 0 ? 0 : header.sh_size / symEntsize;
-        const std::string strtabData = m_ELFSections.count(".strtab") ? m_ELFSections.at(".strtab").data : std::string();
+        const std::span<const std::byte> strtabData =
+            m_ELFSections.count(".strtab") ? std::span<const std::byte>(m_ELFSections.at(".strtab").data) : std::span<const std::byte>();
 
         for (std::uint64_t isym = 0; isym < nsym; ++isym) {
             ELFIO::Elf64_Sym sym{};
@@ -491,7 +502,7 @@ void CubinFile::writeImplicitSectionAsm(std::ostream& os, const std::string& sec
 
             os << std::format("    // Symbol[{}] \"{}\": st_value=0x{:x} st_size={} st_info=0x{:x} st_other=0x{:x} st_shndx={}\n", isym,
                                symName, sym.st_value, sym.st_size, sym.st_info, sym.st_other, sym.st_shndx);
-            os << bytes2Asm(data.substr(isym * symEntsize, symEntsize), 8, isym * symEntsize);
+            os << bytes2Asm(data.subspan(isym * symEntsize, symEntsize), 8, isym * symEntsize);
             os << "\n";
         }
     } else if (secName.empty()) {
@@ -508,8 +519,10 @@ void CubinFile::writeImplicitSectionAsm(std::ostream& os, const std::string& sec
         const std::uint64_t relEntsize = header.sh_entsize;
         const std::uint64_t nrel = relEntsize == 0 ? 0 : header.sh_size / relEntsize;
 
-        const std::string symtabData = m_ELFSections.count(".symtab") ? m_ELFSections.at(".symtab").data : std::string();
-        const std::string strtabData = m_ELFSections.count(".strtab") ? m_ELFSections.at(".strtab").data : std::string();
+        const std::span<const std::byte> symtabData =
+            m_ELFSections.count(".symtab") ? std::span<const std::byte>(m_ELFSections.at(".symtab").data) : std::span<const std::byte>();
+        const std::span<const std::byte> strtabData =
+            m_ELFSections.count(".strtab") ? std::span<const std::byte>(m_ELFSections.at(".strtab").data) : std::span<const std::byte>();
         const std::uint64_t symEntsize = m_ELFSections.count(".symtab") ? m_ELFSections.at(".symtab").header.sh_entsize : 0;
 
         for (std::uint64_t irel = 0; irel < nrel; ++irel) {

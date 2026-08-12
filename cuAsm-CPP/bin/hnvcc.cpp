@@ -82,18 +82,6 @@ void printUsage() {
 }
 
 /**
- * @brief Strips leading and trailing whitespace from a string.
- * @param s String to trim.
- * @return The trimmed string.
- **/
-std::string trim(const std::string& s) {
-    size_t b = s.find_first_not_of(" \t\r\n");
-    if (b == std::string::npos) return "";
-    size_t e = s.find_last_not_of(" \t\r\n");
-    return s.substr(b, e - b + 1);
-}
-
-/**
  * @brief Converts a string to lowercase.
  * @param s String to convert.
  * @return The lowercased string.
@@ -156,7 +144,7 @@ std::pair<int, std::string> run(const std::vector<std::string>& args, bool doChe
 
     try {
         std::string out = CuAsm::checkOutput(args);
-        res = {0, trim(out)};
+        res = {0, CuAsm::trim(out)};
     } catch (const CuAsm::CalledProcessError& cpe) {
         std::cout << "Error when running command" << std::endl;
         std::cout << cpe.output() << std::endl;
@@ -214,7 +202,7 @@ void doHackOrDump(const std::vector<std::string>& args, const std::string& op) {
     std::istringstream lines(outS);
     std::string line;
     while (std::getline(lines, line)) {
-        std::string sline = trim(line);
+        std::string sline = CuAsm::trim(line);
 		if (sline.empty() || sline.rfind("#$ ", 0) != 0 || std::regex_search(sline, varLinePattern)) { // Skip commands that are not #$ commands, or are variable assignments like "#$ _WORD_="
             continue;
         }
@@ -298,7 +286,7 @@ void hnvcc(std::vector<std::string> args) {
     if (envOp == nullptr) {
         op = "none";
     } else {
-        op = toLower(trim(envOp));
+        op = toLower(CuAsm::trim(envOp));
         if (op != "hack" && op != "dump" && op != "none") {
             throw std::invalid_argument("Unknown HNVCC_OP \"" + op + "\"");
         }

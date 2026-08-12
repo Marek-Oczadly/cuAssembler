@@ -40,12 +40,12 @@ void CuKernelAssembler::push(std::uint64_t addr, const std::string& icodeStr, co
     m_ICodeList.push_back(icode);
 }
 
-std::string CuKernelAssembler::genCode() {
+std::vector<std::byte> CuKernelAssembler::genCode() {
     m_CodeBytes = m_Arch.mergeCtrlCodes(m_ICodeList, m_CCodeList);
     return m_CodeBytes;
 }
 
-const std::string& CuKernelAssembler::getCodeBytes() const {
+const std::vector<std::byte>& CuKernelAssembler::getCodeBytes() const {
     return m_CodeBytes;
 }
 

@@ -1,19 +1,24 @@
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <ctime>
 #include <filesystem>
-#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <map>
 #include <memory>
+#include <optional>
 #include <random>
 #include <sstream>
 #include <string>
 #include <type_traits>
 #include <utility>
+
+#include <spdlog/details/log_msg.h>
+#include <spdlog/sinks/rotating_file_sink.h>
+#include <spdlog/sinks/stdout_sinks.h>
 
 namespace CuAsm {
 
@@ -40,6 +45,16 @@ enum class LogLevel : int {
  * levels), without affecting the logging of other modules. All state is static: several
  * named loggers may exist simultaneously, and setActiveLogger() switches which one
  * subsequent log calls target, mirroring the python class's design.
+ *
+ * Internally this is a thin compatibility shim over spdlog: rotating-file I/O and stdout
+ * writing are delegated to spdlog's sinks (no hand-rolled RotatingFileHandler.doRollover
+ * equivalent), while the independent file-level/stdout-level/logger-level numeric gating
+ * (mirroring python logging's arbitrary integer levels, which don't map onto spdlog's fixed
+ * 6-value level enum) is still done here, exactly as before: each sink is written to
+ * directly (bypassing spdlog::logger's own level filter) only after our own gate passes, with
+ * each sink's own formatter set to a plain "%v" passthrough so spdlog contributes no
+ * timestamp/level formatting of its own -- the already-timestamped, already-tagged line built
+ * by doLog() is the sink's entire payload, keeping the on-disk/on-screen format unchanged.
  */
 class CuAsmLogger {
 public:
@@ -171,24 +186,7 @@ public:
      */
     template <typename Func>
     static auto logTimeIt(std::string funcName, Func func) {
-        return [funcName = std::move(funcName), func = std::move(func)](auto&&... args) mutable {
-            logLiteral("Running " + funcName + "...");
-            incIndent();
-            const auto t0 = std::chrono::steady_clock::now();
-
-            if constexpr (std::is_void_v<decltype(func(std::forward<decltype(args)>(args)...))>) {
-                func(std::forward<decltype(args)>(args)...);
-                const auto t1 = std::chrono::steady_clock::now();
-                decIndent();
-                logLiteral(formatTimeItMessage(funcName, t0, t1));
-            } else {
-                auto ret = func(std::forward<decltype(args)>(args)...);
-                const auto t1 = std::chrono::steady_clock::now();
-                decIndent();
-                logLiteral(formatTimeItMessage(funcName, t0, t1));
-                return ret;
-            }
-        };
+        return wrapCall(std::move(funcName), /*reportTiming=*/true, std::move(func));
     }
 
     /**
@@ -199,17 +197,7 @@ public:
      */
     template <typename Func>
     static auto logIndentIt(Func func) {
-        return [func = std::move(func)](auto&&... args) mutable {
-            incIndent();
-            if constexpr (std::is_void_v<decltype(func(std::forward<decltype(args)>(args)...))>) {
-                func(std::forward<decltype(args)>(args)...);
-                decIndent();
-            } else {
-                auto ret = func(std::forward<decltype(args)>(args)...);
-                decIndent();
-                return ret;
-            }
-        };
+        return wrapCall(std::nullopt, /*reportTiming=*/false, std::move(func));
     }
 
     /**
@@ -221,18 +209,7 @@ public:
      */
     template <typename Func>
     static auto logTraceIt(std::string funcName, Func func) {
-        return [funcName = std::move(funcName), func = std::move(func)](auto&&... args) mutable {
-            logLiteral("Running " + funcName + "...");
-            incIndent();
-            if constexpr (std::is_void_v<decltype(func(std::forward<decltype(args)>(args)...))>) {
-                func(std::forward<decltype(args)>(args)...);
-                decIndent();
-            } else {
-                auto ret = func(std::forward<decltype(args)>(args)...);
-                decIndent();
-                return ret;
-            }
-        };
+        return wrapCall(std::move(funcName), /*reportTiming=*/false, std::move(func));
     }
 
     /**
@@ -267,20 +244,58 @@ public:
 
 private:
     /**
-     * @brief Per-name logger state: sinks, thresholds and rollover bookkeeping.
+     * @brief Per-name logger state: sinks, thresholds and rollover bookkeeping. The rotating
+     *        file/stdout sinks are spdlog's; only the numeric level gating below is our own.
      */
     struct LoggerState {
         std::string name;
         std::string logFilePath;
-        std::ofstream fileStream;
-        std::size_t fileMaxBytes = 0;
-        int fileBackupCount = 0;
+        std::shared_ptr<spdlog::sinks::sink> fileSink;
+        std::shared_ptr<spdlog::sinks::sink> stdoutSink;
         int fileLevel = static_cast<int>(LogLevel::Debug);
         int stdoutLevel = static_cast<int>(LogLevel::Procedure);
         int loggerLevel = static_cast<int>(LogLevel::Debug);
         bool hasLogFile = false;
         bool hasStdout = false;
     };
+
+    /**
+     * @brief Shared implementation behind logTimeIt/logIndentIt/logTraceIt: optionally logs a
+     *        "Running <funcName>..." message, calls func at one deeper indent level, then
+     *        optionally logs a completion message with elapsed time.
+     * @param funcName Name to report in log messages; std::nullopt for logIndentIt, which
+     *        reports nothing.
+     * @param reportTiming Whether to log a "completed! Time=..." message after the call.
+     * @param func Callable to wrap.
+     * @return A callable with the same call signature as func, wrapped as described.
+     */
+    template <typename Func>
+    static auto wrapCall(std::optional<std::string> funcName, bool reportTiming, Func func) {
+        return [funcName = std::move(funcName), reportTiming, func = std::move(func)](auto&&... args) mutable {
+            if (funcName) {
+                logLiteral("Running " + *funcName + "...");
+            }
+            incIndent();
+            const auto t0 = std::chrono::steady_clock::now();
+
+            auto finish = [&] {
+                decIndent();
+                if (reportTiming && funcName) {
+                    const auto t1 = std::chrono::steady_clock::now();
+                    logLiteral(formatTimeItMessage(*funcName, t0, t1));
+                }
+            };
+
+            if constexpr (std::is_void_v<decltype(func(std::forward<decltype(args)>(args)...))>) {
+                func(std::forward<decltype(args)>(args)...);
+                finish();
+            } else {
+                auto ret = func(std::forward<decltype(args)>(args)...);
+                finish();
+                return ret;
+            }
+        };
+    }
 
     /**
      * @brief Formats the "Func ... completed! Time=... secs." message used by logTimeIt.
@@ -301,20 +316,14 @@ private:
     static std::string currentTimestamp();
 
     /**
-     * @brief Rolls the log file over: renames path.(N-1) to path.N down to path.1, then the
-     *        active file to path.1, and reopens a fresh empty file, mirroring
-     *        logging.handlers.RotatingFileHandler.doRollover.
-     * @param state Logger state whose file should be rolled over.
-     */
-    static void rollOverFile(LoggerState& state);
-
-    /**
-     * @brief Writes a line to a logger's file, rolling over first if it would exceed
-     *        fileMaxBytes.
-     * @param state Logger state to write to.
+     * @brief Writes a fully-formatted line directly to one spdlog sink, bypassing
+     *        spdlog::logger's own level filter (already applied by doLog's caller) and
+     *        flushing immediately, mirroring the original's per-write flush.
+     * @param sink Sink to write to.
+     * @param loggerName Name reported in the underlying spdlog::details::log_msg.
      * @param line Fully formatted line (timestamp + message) to write.
      */
-    static void writeToFile(LoggerState& state, const std::string& line);
+    static void writeToSink(spdlog::sinks::sink& sink, const std::string& loggerName, const std::string& line);
 
     /**
      * @brief Dispatches a fully-prefixed message to the active logger's sinks, applying the
@@ -332,6 +341,8 @@ private:
         state->stdoutLevel = static_cast<int>(LogLevel::Procedure);
         state->hasLogFile = false;
         state->hasStdout = true;
+        state->stdoutSink = std::make_shared<spdlog::sinks::stdout_sink_mt>();
+        state->stdoutSink->set_pattern("%v");
         return state;
     }();
     static inline int s_indentLevel = 0;
@@ -387,10 +398,13 @@ inline void CuAsmLogger::initLogger(const std::string& logFile,
     state->loggerLevel = static_cast<int>(LogLevel::Debug);
     state->fileLevel = fileLevel;
     state->stdoutLevel = stdoutLevel;
-    state->fileMaxBytes = fileMaxBytes;
-    state->fileBackupCount = fileBackupCount;
     state->hasLogFile = hasLogFile;
     state->hasStdout = hasStdout;
+
+    if (hasStdout) {
+        state->stdoutSink = std::make_shared<spdlog::sinks::stdout_sink_mt>();
+        state->stdoutSink->set_pattern("%v");
+    }
 
     if (hasLogFile) {
         std::string fullLogFile;
@@ -405,13 +419,13 @@ inline void CuAsmLogger::initLogger(const std::string& logFile,
         std::cout << "InitLogger(" << name << ") with logfile \"" << fullLogFile << "\"..." << std::endl;
 
         state->logFilePath = fullLogFile;
-        const bool needsRollOver = std::filesystem::exists(fullLogFile);
-        state->fileStream.open(fullLogFile, std::ios::out | std::ios::app);
-
-        if (needsRollOver) {
-            std::cout << "Logfile " << fullLogFile << " already exists! Rolling over..." << std::endl;
-            rollOverFile(*state);
-        }
+        // rotate_on_open mirrors the original's unconditional-rollover-if-the-file-already-
+        // exists behavior (spdlog only skips it for an already-empty file, a harmless
+        // difference: an empty pre-existing log has nothing worth rolling over anyway).
+        auto rotatingSink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
+            fullLogFile, fileMaxBytes, static_cast<std::size_t>(std::max(0, fileBackupCount)), /*rotate_on_open=*/true);
+        rotatingSink->set_pattern("%v");
+        state->fileSink = rotatingSink;
     }
 
     s_loggerRepos[name] = state;
@@ -434,6 +448,12 @@ inline std::string CuAsmLogger::getCurrentLogFile() {
     return s_currLogger->logFilePath;
 }
 
+inline void CuAsmLogger::writeToSink(spdlog::sinks::sink& sink, const std::string& loggerName, const std::string& line) {
+    const spdlog::details::log_msg logMsg(loggerName, spdlog::level::info, line);
+    sink.log(logMsg);
+    sink.flush();
+}
+
 inline void CuAsmLogger::doLog(int level, const std::string& msg) {
     if (!s_currLogger) {
         return;
@@ -444,11 +464,11 @@ inline void CuAsmLogger::doLog(int level, const std::string& msg) {
     }
 
     const std::string line = currentTimestamp() + " - " + msg;
-    if (state.hasLogFile && level >= state.fileLevel) {
-        writeToFile(state, line);
+    if (state.hasLogFile && state.fileSink && level >= state.fileLevel) {
+        writeToSink(*state.fileSink, state.name, line);
     }
-    if (state.hasStdout && level >= state.stdoutLevel) {
-        std::cout << line << std::endl;
+    if (state.hasStdout && state.stdoutSink && level >= state.stdoutLevel) {
+        writeToSink(*state.stdoutSink, state.name, line);
     }
 }
 
@@ -550,56 +570,6 @@ inline std::string CuAsmLogger::currentTimestamp() {
     std::ostringstream oss;
     oss << std::put_time(&tmBuf, "%Y-%m-%d %H:%M:%S") << ',' << std::setfill('0') << std::setw(3) << ms.count();
     return oss.str();
-}
-
-inline void CuAsmLogger::rollOverFile(LoggerState& state) {
-    namespace fs = std::filesystem;
-
-    if (state.fileStream.is_open()) {
-        state.fileStream.close();
-    }
-
-    if (state.fileBackupCount > 0) {
-        for (int i = state.fileBackupCount - 1; i >= 1; --i) {
-            const std::string src = state.logFilePath + "." + std::to_string(i);
-            const std::string dst = state.logFilePath + "." + std::to_string(i + 1);
-            if (fs::exists(src)) {
-                if (fs::exists(dst)) {
-                    fs::remove(dst);
-                }
-                fs::rename(src, dst);
-            }
-        }
-
-        const std::string dst1 = state.logFilePath + ".1";
-        if (fs::exists(dst1)) {
-            fs::remove(dst1);
-        }
-        if (fs::exists(state.logFilePath)) {
-            fs::rename(state.logFilePath, dst1);
-        }
-    } else if (fs::exists(state.logFilePath)) {
-        fs::remove(state.logFilePath);
-    }
-
-    state.fileStream.open(state.logFilePath, std::ios::out | std::ios::app);
-}
-
-inline void CuAsmLogger::writeToFile(LoggerState& state, const std::string& line) {
-    if (!state.fileStream.is_open()) {
-        return;
-    }
-
-    if (state.fileMaxBytes > 0) {
-        state.fileStream.flush();
-        const auto currentSize = static_cast<std::size_t>(std::filesystem::file_size(state.logFilePath));
-        if (currentSize + line.size() + 1 > state.fileMaxBytes) {
-            rollOverFile(state);
-        }
-    }
-
-    state.fileStream << line << '\n';
-    state.fileStream.flush();
 }
 
 } // namespace CuAsm

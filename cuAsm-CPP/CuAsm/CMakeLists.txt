@@ -22,7 +22,10 @@ target_include_directories(CuAsm PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/..
 )
 
-# Boost.Multiprecision (used by CuInsAssembler for exact-rational linear algebra) is header-only
-# and part of the same Boost distribution found via find_package(Boost) in the top-level
-# CMakeLists.txt, so no extra COMPONENTS/dependency is needed beyond linking its headers target.
-target_link_libraries(CuAsm PUBLIC CuAsmUtils elfio::elfio Boost::headers)
+# Boost.Multiprecision (used by CuInsAssembler for exact-rational linear algebra) is header-only,
+# so no extra COMPONENTS/dependency is needed beyond linking its headers target. Boost.Regex
+# (used by CuInsParser for lookbehind-dependent patterns std::regex can't express) is a compiled
+# library, hence the separate `regex` COMPONENTS entry in the top-level find_package(Boost) call.
+# spdlog is PUBLIC since CuAsmLogger.hpp (which wraps it) is itself a public header included
+# directly by bin/ tools, not just other CuAsm sources.
+target_link_libraries(CuAsm PUBLIC CuAsmUtils elfio::elfio Boost::headers Boost::regex spdlog::spdlog)

@@ -79,45 +79,39 @@ const BigInt& ccMask7x8x() {
     return mask;
 }
 
-const std::string& padBytes5x6x() {
-    static const std::string bytes = [] {
-        static const std::uint8_t raw[] = {
-            0xe0, 0x07, 0x00, 0xfc, 0x00, 0x80, 0x1f, 0x00,
-            0x00, 0x0f, 0x07, 0x00, 0x00, 0x00, 0xb0, 0x50,
-            0x00, 0x0f, 0x07, 0x00, 0x00, 0x00, 0xb0, 0x50,
-            0x00, 0x0f, 0x07, 0x00, 0x00, 0x00, 0xb0, 0x50,
-        };
-        return std::string(reinterpret_cast<const char*>(raw), sizeof(raw));
-    }();
-    return bytes;
+std::span<const std::byte> padBytes5x6x() {
+    static constexpr std::uint8_t raw[] = {
+        0xe0, 0x07, 0x00, 0xfc, 0x00, 0x80, 0x1f, 0x00,
+        0x00, 0x0f, 0x07, 0x00, 0x00, 0x00, 0xb0, 0x50,
+        0x00, 0x0f, 0x07, 0x00, 0x00, 0x00, 0xb0, 0x50,
+        0x00, 0x0f, 0x07, 0x00, 0x00, 0x00, 0xb0, 0x50,
+    };
+    return std::as_bytes(std::span(raw));
 }
 
-const std::string& padBytes7x8x() {
-    static const std::string bytes = [] {
-        static const std::uint8_t raw[] = {
-            0x18, 0x79, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0x0f, 0x00,
-        };
-        return std::string(reinterpret_cast<const char*>(raw), sizeof(raw));
-    }();
-    return bytes;
+std::span<const std::byte> padBytes7x8x() {
+    static constexpr std::uint8_t raw[] = {
+        0x18, 0x79, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0x0f, 0x00,
+    };
+    return std::as_bytes(std::span(raw));
 }
 
 // ---- Byte <-> BigInt helpers ----
 
-BigInt readLittleEndianBigInt(const std::string& bytes, std::size_t pos, std::size_t n) {
+BigInt readLittleEndianBigInt(std::span<const std::byte> bytes, std::size_t pos, std::size_t n) {
     BigInt val = 0;
     for (std::size_t i = 0; i < n; ++i) {
-        val |= BigInt(static_cast<unsigned char>(bytes[pos + i])) << (8 * i);
+        val |= BigInt(std::to_integer<unsigned char>(bytes[pos + i])) << (8 * i);
     }
     return val;
 }
 
-void appendLittleEndian(std::string& out, const BigInt& value, int nbytes) {
+void appendLittleEndian(std::vector<std::byte>& out, const BigInt& value, int nbytes) {
     static const BigInt byteMask(0xff);
     BigInt v = value;
     for (int i = 0; i < nbytes; ++i) {
-        out.push_back(static_cast<char>((v & byteMask).convert_to<unsigned int>()));
+        out.push_back(static_cast<std::byte>((v & byteMask).convert_to<unsigned int>()));
         v >>= 8;
     }
 }
@@ -144,14 +138,14 @@ RemixResult5x6x remixCode5x6x(const BigInt& i0, const BigInt& i1, const BigInt& 
     return {cc, i0 & b64Mask(), i1 & b64Mask(), i2 & b64Mask()};
 }
 
-std::string mergeCtrlCodes5x6x(const std::vector<BigInt>& insCodeList, const std::vector<std::uint32_t>& ctrlCodeList) {
+std::vector<std::byte> mergeCtrlCodes5x6x(const std::vector<BigInt>& insCodeList, const std::vector<std::uint32_t>& ctrlCodeList) {
     const std::size_t nIns = insCodeList.size();
     if (ctrlCodeList.size() != nIns) {
         throw std::runtime_error("Length of control codes(" + std::to_string(ctrlCodeList.size()) +
                                   ") != length of instruction(" + std::to_string(nIns) + ")!");
     }
 
-    std::string out;
+    std::vector<std::byte> out;
     const std::size_t nccodeIntact = nIns / 3; // intact part of control code groups (1+3)
     for (std::size_t i = 0; i < nccodeIntact; ++i) {
         const RemixResult5x6x r = remixCode5x6x(insCodeList[3 * i], insCodeList[3 * i + 1], insCodeList[3 * i + 2],
@@ -188,14 +182,14 @@ std::string mergeCtrlCodes5x6x(const std::vector<BigInt>& insCodeList, const std
     return out;
 }
 
-std::string mergeCtrlCodes7x8x(const std::vector<BigInt>& insCodeList, const std::vector<std::uint32_t>& ctrlCodeList) {
+std::vector<std::byte> mergeCtrlCodes7x8x(const std::vector<BigInt>& insCodeList, const std::vector<std::uint32_t>& ctrlCodeList) {
     const std::size_t nIns = insCodeList.size();
     if (ctrlCodeList.size() != nIns) {
         throw std::runtime_error("Length of control codes(" + std::to_string(ctrlCodeList.size()) +
                                   ") != length of instruction(" + std::to_string(nIns) + ")!");
     }
 
-    std::string out;
+    std::vector<std::byte> out;
     out.reserve(nIns * 16);
     for (std::size_t i = 0; i < nIns; ++i) {
         const BigInt code = (BigInt(ctrlCodeList[i]) << kCCPos_7x8x) + insCodeList[i];
@@ -397,7 +391,7 @@ std::uint64_t CuSMVersion::getNOP() const {
     return (m_Major <= 6) ? kPadICode5x6x : kPadICode7x8x;
 }
 
-std::string CuSMVersion::getPadBytes() const {
+std::span<const std::byte> CuSMVersion::getPadBytes() const {
     return (m_Major <= 6) ? padBytes5x6x() : padBytes7x8x();
 }
 
@@ -466,7 +460,7 @@ std::string CuSMVersion::hackDisassembly(std::uint64_t code, const std::string& 
 }
 
 std::pair<std::vector<std::uint32_t>, std::vector<BigInt>>
-CuSMVersion::splitCtrlCodeFromBytes(const std::string& codebytes) const {
+CuSMVersion::splitCtrlCodeFromBytes(std::span<const std::byte> codebytes) const {
     if (m_Major <= 6) {
         if ((codebytes.size() & 0x1f) != 0) {
             throw std::invalid_argument("splitCtrlCodeFromBytes: length must be a multiple of 32 bytes for sm5x/6x!");
@@ -492,8 +486,8 @@ CuSMVersion::splitCtrlCodeFromBytes(const std::string& codebytes) const {
     return splitCtrlCodeFromIntList_7x_8x(intList);
 }
 
-std::string CuSMVersion::mergeCtrlCodes(const std::vector<BigInt>& insCodeList,
-                                          const std::vector<std::uint32_t>& ctrlCodeList) const {
+std::vector<std::byte> CuSMVersion::mergeCtrlCodes(const std::vector<BigInt>& insCodeList,
+                                                    const std::vector<std::uint32_t>& ctrlCodeList) const {
     return (m_Major <= 6) ? mergeCtrlCodes5x6x(insCodeList, ctrlCodeList) : mergeCtrlCodes7x8x(insCodeList, ctrlCodeList);
 }
 

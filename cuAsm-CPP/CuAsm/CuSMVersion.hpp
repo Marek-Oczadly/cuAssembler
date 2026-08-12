@@ -1,9 +1,11 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -91,7 +93,7 @@ public:
      *        mirroring getPadBytes.
      * @return The padding byte sequence.
      **/
-    std::string getPadBytes() const;
+    std::span<const std::byte> getPadBytes() const;
 
     /**
      * @brief Gets the size unit (in bytes) the .text section should be padded to a multiple of,
@@ -145,7 +147,7 @@ public:
      * @return Pair of (control code list, instruction code list), one entry per instruction.
      **/
     std::pair<std::vector<std::uint32_t>, std::vector<BigInt>>
-    splitCtrlCodeFromBytes(const std::string& codebytes) const;
+    splitCtrlCodeFromBytes(std::span<const std::byte> codebytes) const;
 
     /**
      * @brief Merges parallel instruction-code and control-code lists back into raw .text section
@@ -155,8 +157,8 @@ public:
      * @param ctrlCodeList Control codes, one per instruction; must be the same length as insCodeList.
      * @return The merged raw bytes.
      **/
-    std::string mergeCtrlCodes(const std::vector<BigInt>& insCodeList,
-                                const std::vector<std::uint32_t>& ctrlCodeList) const;
+    std::vector<std::byte> mergeCtrlCodes(const std::vector<BigInt>& insCodeList,
+                                           const std::vector<std::uint32_t>& ctrlCodeList) const;
 
     /**
      * @brief Splits a flat list of raw sm5x/6x instruction-pack ints into parallel control-code

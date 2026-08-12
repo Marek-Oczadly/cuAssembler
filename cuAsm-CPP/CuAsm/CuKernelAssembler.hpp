@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <string>
@@ -52,14 +53,14 @@ public:
      *        CuKernelAssembler.genCode.
      * @return The kernel's assembled .text section bytes.
      **/
-    std::string genCode();
+    std::vector<std::byte> genCode();
 
     /**
      * @brief Gets the bytes produced by the last genCode() call, mirroring
      *        CuKernelAssembler.getCodeBytes.
      * @return The kernel's assembled .text section bytes.
      **/
-    const std::string& getCodeBytes() const;
+    const std::vector<std::byte>& getCodeBytes() const;
 
     /// Auto-detected extra attributes (e.g. offsets of EXIT/S2R.CTAID instructions, barrier
     /// count) gathered while pushing instructions, keyed by NVInfo attribute name, mirroring
@@ -111,7 +112,7 @@ private:
     std::vector<BigInt> m_ICodeList;
 
     int m_InsIdx = 0;
-    std::string m_CodeBytes;
+    std::vector<std::byte> m_CodeBytes;
 };
 
 } // namespace CuAsm

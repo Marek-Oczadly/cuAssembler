@@ -5,24 +5,9 @@
 #include <stdexcept>
 #include <vector>
 
+#include "common.hpp"
+
 namespace CuAsm {
-
-namespace {
-
-/** @brief Splits a string on a delimiter character, mirroring python's str.split(sep). */
-std::vector<std::string> splitString(const std::string& s, char delim) {
-    std::vector<std::string> parts;
-    std::size_t start = 0;
-    for (std::size_t i = 0; i <= s.size(); ++i) {
-        if (i == s.size() || s[i] == delim) {
-            parts.push_back(s.substr(start, i - start));
-            start = i + 1;
-        }
-    }
-    return parts;
-}
-
-} // namespace
 
 bool matchesControlCodePattern(const std::string& s) {
     static const std::regex pattern(
@@ -112,7 +97,7 @@ std::uint32_t CuControlCode::encode(const std::string& s) {
         throw std::invalid_argument("Invalid control code strings: " + s + " !!!");
     }
 
-    const std::vector<std::string> tokens = splitString(s, ':');
+    const std::vector<std::string> tokens = splitChar(s, ':');
 
     std::uint32_t waitbar = 0;
     for (int i = 0; i < 6; ++i) {

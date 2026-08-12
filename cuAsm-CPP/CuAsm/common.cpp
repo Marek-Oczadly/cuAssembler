@@ -11,7 +11,11 @@
 #include <regex>
 #include <sstream>
 
+#include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/join.hpp>
+#include <boost/algorithm/string/replace.hpp>
+#include <boost/algorithm/string/split.hpp>
+#include <boost/algorithm/string/trim.hpp>
 
 #ifdef _WIN32
 #include <cstdlib>
@@ -30,10 +34,11 @@ namespace {
  * @param s Byte string to format.
  * @return The formatted repr string.
  **/
-std::string reprBytes(const std::string& s) {
+std::string reprBytes(std::span<const std::byte> s) {
     std::ostringstream out;
     out << "b'";
-    for (unsigned char c : s) {
+    for (std::byte b : s) {
+        const unsigned char c = std::to_integer<unsigned char>(b);
         if (c == '\\' || c == '\'') {
             out << '\\' << c;
         } else if (c == '\n') {
@@ -283,11 +288,7 @@ std::map<std::string, std::pair<int, int>> splitAsmSection(const std::vector<std
 
             bool hasPrevComment = false;
             if (iline > 0) {
-                std::string prevLine = lines[iline - 1];
-                // trim
-                std::size_t b = prevLine.find_first_not_of(" \t\r\n");
-                std::size_t e = prevLine.find_last_not_of(" \t\r\n");
-                prevLine = (b == std::string::npos) ? "" : prevLine.substr(b, e - b + 1);
+                std::string prevLine = trim(lines[iline - 1]);
                 if (prevLine.rfind("//", 0) == 0 && prevLine.find(secname) != std::string::npos) {
                     hasPrevComment = true;
                 }
@@ -310,18 +311,19 @@ std::map<std::string, std::pair<int, int>> splitAsmSection(const std::vector<std
     return sectionMarkers;
 }
 
-std::string stringBytes2Asm(const std::string& ss, const std::string& label, int width) {
+std::string stringBytes2Asm(std::span<const std::byte> ss, const std::string& label, int width) {
     std::size_t p = 0;
     int counter = 0;
 
     std::ostringstream sio;
     while (true) {
-        std::size_t pnext = ss.find('\0', p);
-        if (pnext == std::string::npos) {
+        const auto it = std::find(ss.begin() + static_cast<std::ptrdiff_t>(p), ss.end(), std::byte{0});
+        if (it == ss.end()) {
             break;
         }
+        const std::size_t pnext = static_cast<std::size_t>(it - ss.begin());
 
-        std::string s = ss.substr(p, pnext - p + 1);
+        const std::span<const std::byte> s = ss.subspan(p, pnext - p + 1);
         sio << "    // " << label << '[' << counter << "] = " << reprBytes(s) << " \n";
 
         std::size_t p0 = p;
@@ -331,7 +333,7 @@ std::string stringBytes2Asm(const std::string& ss, const std::string& label, int
                 if (k > p0) {
                     sio << ", ";
                 }
-                sio << "0x" << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(static_cast<unsigned char>(s[k - p])) << std::dec;
+                sio << "0x" << std::hex << std::setw(2) << std::setfill('0') << std::to_integer<int>(s[k - p]) << std::dec;
             }
             sio << '\n';
             p0 += width;
@@ -345,7 +347,7 @@ std::string stringBytes2Asm(const std::string& ss, const std::string& label, int
     return sio.str();
 }
 
-std::string bytes2Asm(const std::string& bs, int width, std::uint64_t addrOffset, const std::string& ident) {
+std::string bytes2Asm(std::span<const std::byte> bs, int width, std::uint64_t addrOffset, const std::string& ident) {
     std::ostringstream sio;
 
     std::size_t p = 0;
@@ -356,7 +358,7 @@ std::string bytes2Asm(const std::string& bs, int width, std::uint64_t addrOffset
             if (k > p) {
                 sio << ", ";
             }
-            sio << "0x" << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(static_cast<unsigned char>(bs[k])) << std::dec;
+            sio << "0x" << std::hex << std::setw(2) << std::setfill('0') << std::to_integer<int>(bs[k]) << std::dec;
         }
         sio << '\n';
         p += width;
@@ -370,7 +372,12 @@ void bytesdump(const std::string& inname, const std::string& outname) {
     if (!fin) {
         throw std::runtime_error("Failed to open input file: " + inname);
     }
-    std::string bs((std::istreambuf_iterator<char>(fin)), std::istreambuf_iterator<char>());
+    fin.seekg(0, std::ios::end);
+    const auto size = fin.tellg();
+    fin.seekg(0, std::ios::beg);
+
+    std::vector<std::byte> bs(static_cast<std::size_t>(size));
+    fin.read(reinterpret_cast<char*>(bs.data()), size);
 
     std::string bstr = bytes2Asm(bs);
 
@@ -387,12 +394,36 @@ std::string stripComments(const std::string& s) {
     out = std::regex_replace(out, p_bracomment, " ");
     out = std::regex_replace(out, std::regex(R"(\s+)"), " ");
 
-    std::size_t b = out.find_first_not_of(' ');
-    std::size_t e = out.find_last_not_of(' ');
-    if (b == std::string::npos) {
-        return "";
+    return trimChars(out, " ");
+}
+
+std::string trim(const std::string& s) {
+    return boost::algorithm::trim_copy(s);
+}
+
+std::string rtrim(const std::string& s) {
+    return boost::algorithm::trim_right_copy(s);
+}
+
+std::string trimChars(const std::string& s, const std::string& chars) {
+    return boost::algorithm::trim_copy_if(s, boost::algorithm::is_any_of(chars));
+}
+
+std::string ltrimChars(const std::string& s, const std::string& chars) {
+    return boost::algorithm::trim_left_copy_if(s, boost::algorithm::is_any_of(chars));
+}
+
+std::vector<std::string> splitChar(const std::string& s, char delim) {
+    std::vector<std::string> out;
+    boost::algorithm::split(out, s, boost::algorithm::is_any_of(std::string(1, delim)), boost::algorithm::token_compress_off);
+    return out;
+}
+
+std::string replaceAll(const std::string& s, const std::string& from, const std::string& to) {
+    if (from.empty()) {
+        return s;
     }
-    return out.substr(b, e - b + 1);
+    return boost::algorithm::replace_all_copy(s, from, to);
 }
 
 std::string pyStrRepr(const std::string& s) {

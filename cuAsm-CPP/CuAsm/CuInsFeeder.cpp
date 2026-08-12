@@ -9,32 +9,11 @@
 
 #include "CuAsmLogger.hpp"
 #include "CuControlCode.hpp"
+#include "common.hpp"
 
 namespace CuAsm {
 
 namespace {
-
-/** @brief Strips trailing whitespace, mirroring python's str.rstrip(). */
-std::string rstrip(const std::string& s) {
-    std::size_t end = s.size();
-    while (end > 0 && std::isspace(static_cast<unsigned char>(s[end - 1]))) {
-        --end;
-    }
-    return s.substr(0, end);
-}
-
-/** @brief Strips leading and trailing whitespace, mirroring python's str.strip(). */
-std::string strip(const std::string& s) {
-    std::size_t begin = 0;
-    while (begin < s.size() && std::isspace(static_cast<unsigned char>(s[begin]))) {
-        ++begin;
-    }
-    std::size_t end = s.size();
-    while (end > begin && std::isspace(static_cast<unsigned char>(s[end - 1]))) {
-        --end;
-    }
-    return s.substr(begin, end - begin);
-}
 
 /** @brief Zero-pads a line number to 4 digits, mirroring python's '%04d'. */
 std::string zeroPad4(std::uint64_t v) {
@@ -472,7 +451,7 @@ void CuInsFeeder::trans(std::ostream& outStream, const std::string& codeOnlyLine
             break;
         }
 
-        const std::string line = rstrip(pl->text);
+        const std::string line = rtrim(pl->text);
         lineBuffers.push_back({line, pl->type});
 
         const ParserState ns = feedLineOp(*pl);
@@ -501,7 +480,7 @@ void CuInsFeeder::trans(std::ostream& outStream, const std::string& codeOnlyLine
                     if (preLt.has_value() && *preLt == LineType::InsOnly) {
                         OutLine& last = outBuffers.back();
                         last.isPending = true;
-                        last.pendingCode = strip(bl.text);
+                        last.pendingCode = trim(bl.text);
                     } else {
                         const std::string ctrlStr = formatCtrlCodeString(0, true);
                         if (codeOnlyLineMode == "keep") {
@@ -577,7 +556,7 @@ void CuInsFeeder::extract(const std::string& outFileName, std::optional<std::str
             }
         }
 
-        buf << rstrip(pl->text) << "\n";
+        buf << rtrim(pl->text) << "\n";
     }
 
     if (!doDump) {
