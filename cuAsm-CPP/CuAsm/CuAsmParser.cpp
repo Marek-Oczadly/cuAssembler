@@ -1814,6 +1814,13 @@ std::pair<std::int64_t, bool> CuAsmParser::Impl::evalVar(const std::string& var)
         return {static_cast<std::int64_t>(mLabelDict.at(var)->offset), isSym};
     }
 
+    if (isSym) {
+        // Symbol exists in .symtab but has no local label (e.g. an external/undefined
+        // function like "vprintf"). Its address is unknown until link time, so callers
+        // rely on the isSym flag to emit a relocation against it instead of a value.
+        return {0, isSym};
+    }
+
     throw std::runtime_error("Unknown expression " + var);
 }
 
