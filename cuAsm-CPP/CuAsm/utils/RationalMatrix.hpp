@@ -156,7 +156,14 @@ public:
         }
 
         RationalMatrix aug = rowJoin(rhs);
-        const std::vector<int> pivots = rref(aug);
+        // Pivot search must stay within the original coefficient columns: letting it wander into
+        // the appended rhs column(s) (as plain rref(aug) would) can pick a "pivot" there whose
+        // column index is >= cols(), which then gets used below as a row index into x (shaped
+        // (cols(), rhs.cols())) - an out-of-bounds write. Restricting it here also makes the
+        // inconsistent-system detection below correct: a rhs entry can only be recognized as
+        // contradicting an all-zero coefficient row if that row was never allowed to claim a
+        // (bogus) pivot inside the rhs column(s) to begin with.
+        const std::vector<int> pivots = rref(aug, cols());
 
         for (int i = static_cast<int>(pivots.size()); i < aug.rows(); ++i) {
             for (int k = 0; k < rhs.cols(); ++k) {
@@ -211,14 +218,22 @@ public:
 
 private:
     /**
-     * @brief Row-reduces m to reduced row echelon form in place.
+     * @brief Row-reduces m to reduced row echelon form in place. Row operations (swap, normalize,
+     *        eliminate) always span every column of m, but the search for a column to pivot on is
+     *        restricted to [0, pivotColLimit) - needed by solve(), whose caller-visible column
+     *        count (cols()) is narrower than the augmented [coefficients | rhs] matrix actually
+     *        passed in here, so a pivot must never be chosen from inside the rhs columns.
      * @param m Matrix to reduce.
-     * @return The pivot column index for each pivot row, in row order.
+     * @param pivotColLimit Exclusive upper bound on pivot column search; negative (the default)
+     *        means "every column of m", used by nullspace()'s unaugmented caller.
+     * @return The pivot column index for each pivot row, in row order; every entry is < pivotColLimit
+     *         (or < m.cols() if pivotColLimit was left at its default).
      **/
-    static std::vector<int> rref(RationalMatrix& m) {
+    static std::vector<int> rref(RationalMatrix& m, int pivotColLimit = -1) {
+        const int colLimit = pivotColLimit < 0 ? m.cols() : pivotColLimit;
         std::vector<int> pivots;
         int r = 0;
-        for (int c = 0; c < m.cols() && r < m.rows(); ++c) {
+        for (int c = 0; c < colLimit && r < m.rows(); ++c) {
             int piv = -1;
             for (int i = r; i < m.rows(); ++i) {
                 if (m(i, c) != 0) {

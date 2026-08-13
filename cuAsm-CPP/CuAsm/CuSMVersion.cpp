@@ -17,9 +17,14 @@ namespace CuAsm {
 namespace {
 
 // ---- SM version validation, mirroring makeVersionDict()/SMVersionDict ----
-
+//
+// Limited to the versions with a shipped DefaultInsAsmRepos (CuAsm/InsAsmRepos/) plus the
+// versions in InsAsmReposAliasDict that fall back to one of those (62->61, 72->75, 87->86) and
+// so are supported without issue. Versions with neither (e.g. 35, 37, 50, 52, 53, 89, 90) are
+// rejected up front rather than accepted and later failing at repos-load time with an empty,
+// non-functional repos (see CuInsAssemblerRepos::setToDefaultInsAsmDict).
 const std::set<int>& validSMVersions() {
-    static const std::set<int> versions = {35, 37, 50, 52, 53, 60, 61, 62, 70, 72, 75, 80, 86, 87, 89, 90};
+    static const std::set<int> versions = {60, 61, 62, 70, 72, 75, 80, 86, 87};
     return versions;
 }
 

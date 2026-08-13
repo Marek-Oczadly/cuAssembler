@@ -29,4 +29,13 @@ add_executable(test_relocation test_relocation.cpp)
 target_link_libraries(test_relocation PRIVATE CuAsm elfio::elfio)
 add_test(NAME test_relocation COMMAND test_relocation)
 
+add_executable(test_CuSMVersion test_CuSMVersion.cpp)
+target_link_libraries(test_CuSMVersion PRIVATE CuAsm)
+add_test(NAME test_CuSMVersion COMMAND test_CuSMVersion)
+
+add_executable(test_UnsupportedArch test_UnsupportedArch.cpp)
+target_link_libraries(test_UnsupportedArch PRIVATE CuAsm)
+add_test(NAME test_UnsupportedArch COMMAND test_UnsupportedArch)
+
+add_subdirectory(utils)
 add_subdirectory(CheckDisasm)
