@@ -1426,9 +1426,23 @@ void CuAsmParser::Impl::evalFixups() {
                     doAssert(false, "Unknown data type for relocation: " + fixup.dtype);
                 }
                 mRelList.push_back(std::make_unique<CuAsmRelocation>(fixup.section, fixup.offset, symname, relsymid, reltype));
-            }
 
-            fixup.value = res.value;
+                // These are implicit-addend (SHT_REL) relocations: the symbol's own resolved
+                // address is supplied by the loader at link/load time from the relocation entry
+                // itself, not read back out of the section bytes. The only thing that belongs in
+                // the placeholder here is the constant addend from any "symbol +/- N" arithmetic
+                // in the expression (0 for a bare symbol reference) -- baking the symbol's
+                // resolved value (`res.value`, e.g. from a self-referential local label) into the
+                // bytes as well double-counts it and corrupts the field whenever that value is
+                // nonzero (see the CooperativeGroups `.nv.constant4` weak-symbol-adjacent bug).
+                std::int64_t addend = 0;
+                if (res.op.has_value()) {
+                    addend = (*res.op == '+') ? *res.bval : -*res.bval;
+                }
+                fixup.value = addend;
+            } else {
+                fixup.value = res.value;
+            }
             updateSectionForFixup(fixup);
         } catch (const std::exception& e) {
             doAssert(false, "Error when evaluating fixup @line" + std::to_string(fixup.lineNo) + ": expr=" + fixup.expr +
