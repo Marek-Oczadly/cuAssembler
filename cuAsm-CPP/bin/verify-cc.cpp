@@ -8,6 +8,10 @@
 // exist anywhere in this codebase yet; see Reports/control-codes-validation.md for the full
 // scope. A clean run of this tool means "the control codes were decoded", not "they're correct".
 //
+// SCOPE: Turing (sm_75) and newer only. Older architectures are rejected up front (see
+// ccCommon.hpp's c_MinSupportedSMVersion) since the operand-role/latency data this tool will
+// eventually need is best documented from Turing onward.
+//
 // Examples:
 //     verify-cc a.cubin
 //         decode and list every kernel's control codes
@@ -60,7 +64,9 @@ bool verifyCC(const std::string& fin, const std::string& kernelFilter) {
 
     const auto arch = CuAsm::Tools::detectArch(ef);
     if (!arch) {
-        CuAsm::CuAsmLogger::logError("Cubin \"" + fin + "\" targets an unsupported/unrecognized SM version!");
+        CuAsm::CuAsmLogger::logError("Cubin \"" + fin +
+                                      "\" targets an unsupported SM version -- verify-cc requires Turing "
+                                      "(sm_75) or newer!");
         return false;
     }
     CuAsm::CuAsmLogger::logProcedure("Detected " + arch->getVersionString() + ".");

@@ -11,6 +11,10 @@
 // merge -> patch-into-file round trip end to end, ready for correctControlCodes() to be filled
 // in without changing anything else.
 //
+// SCOPE: Turing (sm_75) and newer only. Older architectures are rejected up front (see
+// ccCommon.hpp's c_MinSupportedSMVersion) since the operand-role/latency data this tool will
+// eventually need is best documented from Turing onward.
+//
 // Examples:
 //     correct-cc a.cubin
 //         corrects a.cubin's control codes (currently a no-op), writing a.ccubin
@@ -72,7 +76,9 @@ bool correctCC(const std::string& fin, const std::string& fout) {
 
     const auto arch = CuAsm::Tools::detectArch(ef);
     if (!arch) {
-        CuAsm::CuAsmLogger::logError("Cubin \"" + fin + "\" targets an unsupported/unrecognized SM version!");
+        CuAsm::CuAsmLogger::logError("Cubin \"" + fin +
+                                      "\" targets an unsupported SM version -- correct-cc requires Turing "
+                                      "(sm_75) or newer!");
         return false;
     }
     CuAsm::CuAsmLogger::logProcedure("Detected " + arch->getVersionString() + ".");

@@ -48,15 +48,27 @@ struct ControlCodeCheckResult {
     std::string message;
 };
 
+/// Minimum SM version verify-cc/correct-cc support: Turing (sm_75) and newer. Earlier
+/// architectures are excluded not because CuSMVersion can't decode/assemble them, but because
+/// the operand read/write-role and instruction-latency data the eventual hazard-analysis work
+/// needs (see Reports/control-codes-validation.md) is most reliably documented from Turing
+/// onward -- restricting this tool's scope here keeps that future data-curation work on solid
+/// ground instead of guessing at Volta/Pascal/Maxwell behavior from thinner documentation.
+inline constexpr int c_MinSupportedSMVersion = 75;
+
 /**
  * @brief Detects a cubin's target architecture from its ELF header flags, mirroring
  *        CubinFile::loadCubin's own "smVersion = e_flags & 0xff" derivation.
  * @param ef Already-loaded ELF reader for the cubin.
  * @return The detected CuSMVersion, or std::nullopt if the encoded SM version isn't one
- *         CuSMVersion accepts (see CuSMVersion::validSMVersions()).
+ *         CuSMVersion accepts (see CuSMVersion::validSMVersions()), or is older than
+ *         c_MinSupportedSMVersion.
  **/
 inline std::optional<CuSMVersion> detectArch(const ELFIO::elfio& ef) {
     const auto smVersion = static_cast<int>(ef.get_flags() & 0xff);
+    if (smVersion < c_MinSupportedSMVersion) {
+        return std::nullopt;
+    }
     try {
         return CuSMVersion(smVersion);
     } catch (const std::invalid_argument&) {
