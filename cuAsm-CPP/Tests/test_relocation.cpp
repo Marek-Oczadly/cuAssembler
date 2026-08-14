@@ -1,204 +1,156 @@
 #include <cstdint>
-#include <cstdio>
 #include <filesystem>
-#include <iostream>
 #include <map>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <string>
-#include <vector>
+#include <utility>
 
 #include <elfio/elfio.hpp>
 
 #include "../CuAsm/common.hpp"
+#include "utils/TestUtilsCommon.hpp"
 
 namespace fs = std::filesystem;
 
-/// One relocation entry: (symbol name, offset, relocation type, 8 raw bytes read from the section
-/// being relocated), mirroring the (symname, rel, val) tuples of the original getELFRelInfo().
-struct RelEntry {
-    std::string symName;
-    ELFIO::Elf64_Addr offset;
-    ELFIO::Elf_Word type;
-    std::vector<std::uint8_t> val;
-};
+namespace {
+
+using OffsetSymbolSet = std::set<std::pair<ELFIO::Elf64_Addr, std::string>>;
 
 /**
- * @brief Runs `cuobjdump -elf` on a cubin and extracts, for each "REL" section, the raw text lines
- *        cuobjdump prints for it, mirroring the original getRelSectionInfo().
- * @param binname Path of the cubin to dump.
- * @return Map from section name to its list of raw dumped-relocation text lines.
+ * @brief Extracts every (offset, symbol) pair cuobjdump's own text dump reports for each REL
+ *        section of a cubin, by running `cuobjdump -elf` and parsing lines of the form
+ *        "0x<offset>    <symbol>    <TYPE_NAME>" under each ".section <name>	REL" header.
+ * @param binname Cubin to dump.
+ * @return Map from relocation section name to its (offset, symbol) pairs, per cuobjdump.
  **/
-std::map<std::string, std::vector<std::string>> getRelSectionInfo(const std::string& binname) {
-    static const std::regex sectionPattern(R"(\.section\s+([.\w]+)\s*REL)");
+std::map<std::string, OffsetSymbolSet> getRelSectionInfoFromCuobjdump(const std::string& binname) {
+    static const std::regex sectionHeaderRe(R"(^\.section\s+(\S+)\s+REL)");
+    // A RELA section's lines carry a 4th (addend) column REL's don't; the addend isn't needed for
+    // this comparison (offset + symbol only), so it's just optionally consumed here.
+    static const std::regex relLineRe(R"(^0x([0-9a-fA-F]+)\s+(\S+)\s+(\S+)(?:\s+\S+)?$)");
 
-    std::string dump = CuAsm::checkOutput({"cuobjdump", "-elf", binname});
+    const std::string dump = CuAsm::checkOutput({"cuobjdump", "-elf", binname});
 
-    std::map<std::string, std::vector<std::string>> relSecDict;
-    std::string sname;
-    std::vector<std::string> rellines;
-    bool doGather = false;
+    std::map<std::string, OffsetSymbolSet> result;
+    std::string currentSection;
+    bool inSection = false;
 
     std::istringstream iss(dump);
     std::string rawLine;
     while (std::getline(iss, rawLine)) {
-        std::string line = rawLine;
-        // strip leading/trailing whitespace, mirroring python's str.strip()
-        size_t start = line.find_first_not_of(" \t\r\n");
-        size_t end = line.find_last_not_of(" \t\r\n");
-        line = (start == std::string::npos) ? "" : line.substr(start, end - start + 1);
-
-        if (doGather) {
-            if (line.empty()) {
-                relSecDict[sname] = rellines;
-                doGather = false;
-            } else {
-                rellines.push_back(line);
-            }
-            continue;
-        }
+        const std::string line = CuAsm::trim(rawLine);
 
         std::smatch m;
-        if (std::regex_search(line, m, sectionPattern)) {
-            // std::regex_search, not an anchored match, but cuobjdump's section lines always
-            // start with ".section", so this mirrors python's re.match() here.
-            if (line.rfind(".section", 0) == 0) {
-                sname = m[1].str();
-                rellines.clear();
-                doGather = true;
-            }
+        if (std::regex_search(line, m, sectionHeaderRe)) {
+            currentSection = m[1].str();
+            inSection = true;
+            continue;
+        }
+        if (line.empty()) {
+            inSection = false;
+            continue;
+        }
+        if (inSection && std::regex_match(line, m, relLineRe)) {
+            const auto offset = static_cast<ELFIO::Elf64_Addr>(std::stoull(m[1].str(), nullptr, 16));
+            result[currentSection].emplace(offset, m[2].str());
         }
     }
 
-    if (doGather) {
-        if (relSecDict.find(sname) == relSecDict.end()) {
-            relSecDict[sname] = rellines;
-        }
-    }
-
-    return relSecDict;
+    return result;
 }
 
 /**
- * @brief Reads every ".rel*" section's relocations straight from the ELF structures, mirroring the
- *        original getELFRelInfo().
- * @param binname Path of the cubin to read.
- * @return Map from relocation section name to its list of relocation entries.
+ * @brief Extracts every (offset, symbol) pair straight from each ".rel*" section's ELF relocation
+ *        entries, resolving each entry's symbol index against .symtab.
+ * @param binname Cubin to read.
+ * @return Map from relocation section name to its (offset, symbol) pairs, per ELFIO.
  **/
-std::map<std::string, std::vector<RelEntry>> getELFRelInfo(const std::string& binname) {
-    std::map<std::string, std::vector<RelEntry>> relSecDict;
+std::map<std::string, OffsetSymbolSet> getRelSectionInfoFromElf(const std::string& binname) {
+    std::map<std::string, OffsetSymbolSet> result;
 
     ELFIO::elfio ef;
     if (!ef.load(binname)) {
-        std::cerr << "Failed to load " << binname << std::endl;
-        return relSecDict;
+        return result;
     }
 
-    static const std::regex relPrefix(R"(^\.rela?)");
-
+    ELFIO::section* symtab = ef.sections[".symtab"];
     for (const auto& sec : ef.sections) {
-        if (sec->get_name().rfind(".rel", 0) != 0) {
+        if (!sec->get_name().starts_with(".rel")) {
             continue;
         }
 
-        ELFIO::relocation_section_accessor rela(ef, sec.get());
-        std::vector<RelEntry> rels;
-
-        std::string mname = std::regex_replace(sec->get_name(), relPrefix, "");
-        ELFIO::section* secmain = ef.sections[mname];
-        if (secmain == nullptr) {
-            std::cout << "Unmatched section " << sec->get_name() << std::endl;
-            continue;
-        }
-
-        ELFIO::Elf_Xword n = rela.get_entries_num();
+        const ELFIO::relocation_section_accessor rela(ef, sec.get());
+        OffsetSymbolSet entries;
+        const ELFIO::Elf_Xword n = rela.get_entries_num();
         for (ELFIO::Elf_Xword i = 0; i < n; ++i) {
             ELFIO::Elf64_Addr offset = 0;
             ELFIO::Elf_Word symbol = 0;
             ELFIO::Elf_Word type = 0;
             ELFIO::Elf_Sxword addend = 0;
-            std::string symName;
-            ELFIO::Elf64_Addr symValue = 0;
-            unsigned char symBind = 0;
-            unsigned char symType = 0;
-            ELFIO::Elf_Half symSection = 0;
-            unsigned char symOther = 0;
-
             rela.get_entry(i, offset, symbol, type, addend);
 
-            const ELFIO::symbol_section_accessor symAccessor(ef, ef.sections[".symtab"]);
+            std::string symName;
+            ELFIO::Elf64_Addr symValue = 0;
             ELFIO::Elf_Xword symSize = 0;
+            unsigned char symBind = 0, symType = 0, symOther = 0;
+            ELFIO::Elf_Half symSection = 0;
+            const ELFIO::symbol_section_accessor symAccessor(ef, symtab);
             symAccessor.get_symbol(symbol, symName, symValue, symSize, symBind, symType, symSection, symOther);
 
-            const char* mainData = secmain->get_data();
-            std::vector<std::uint8_t> val;
-            if (mainData != nullptr && offset + 8 <= secmain->get_size()) {
-                val.assign(mainData + offset, mainData + offset + 8);
-            }
-
-            rels.push_back(RelEntry{symName, offset, type, val});
+            entries.emplace(offset, symName);
         }
-
-        relSecDict[sec->get_name()] = rels;
+        result[sec->get_name()] = std::move(entries);
     }
 
-    return relSecDict;
+    return result;
 }
 
-/**
- * @brief Formats a byte vector as a lowercase hex string, mirroring python bytes.hex().
- * @param val Bytes to format.
- * @return The hex-encoded string.
- **/
-std::string toHex(const std::vector<std::uint8_t>& val) {
-    std::string s;
-    s.reserve(val.size() * 2);
-    char buf[3];
-    for (auto b : val) {
-        std::snprintf(buf, sizeof(buf), "%02x", b);
-        s += buf;
-    }
-    return s;
-}
+} // namespace
 
 /**
- * @brief Entry point mirroring the original Tests/test_relocation.py script: cross-checks ELF
- *        relocation entries against cuobjdump's own dumped relocation text for every cubin in a
- *        directory.
- * @return 0 on success.
+ * @brief Cross-validates CuAsm's own ELF relocation parsing (the same relocation_section_accessor
+ *        pattern CuAsmParser/CubinFile use internally) against NVIDIA's own cuobjdump for every
+ *        REL section of the CuTest fixture cubins. Previously this file only printed both sources
+ *        side by side with no comparison at all - a real discrepancy (wrong offset, wrong symbol
+ *        resolution) would have been visible only to a human reading the output by eye, if at all.
+ *        cuobjdump is confirmed to run standalone in this environment (unlike nvcc, which needs an
+ *        MSVC host-compiler environment this test harness doesn't set up).
+ * @return 0 if every check passed, 1 otherwise.
  **/
 int main() {
-    std::string fdir = std::string(CUASM_TESTDATA_DIR) + "/CuTest";
+    CuAsm::Test::TestReporter t;
 
-    std::error_code ec;
-    for (const auto& entry : fs::directory_iterator(fdir, ec)) {
+    const std::string dir = std::string(CUASM_TESTDATA_DIR) + "/CuTest";
+    int cubinsChecked = 0;
+
+    for (const auto& entry : fs::directory_iterator(dir)) {
         if (entry.path().extension() != ".cubin") {
             continue;
         }
+        ++cubinsChecked;
+        const std::string fname = entry.path().string();
 
-        std::string fname = entry.path().string();
-        std::cout << "#### " << fname << std::endl;
+        const std::map<std::string, OffsetSymbolSet> fromElf = getRelSectionInfoFromElf(fname);
+        const std::map<std::string, OffsetSymbolSet> fromDump = getRelSectionInfoFromCuobjdump(fname);
 
-        auto d1 = getELFRelInfo(fname);
-        auto d2 = getRelSectionInfo(fname);
+        t.check(fname + ": at least one REL section was found by both ELFIO and cuobjdump",
+                !fromElf.empty() && !fromDump.empty());
 
-        for (const auto& [secName, entries1] : d1) {
-            std::cout << "Section " << secName << " :" << std::endl;
-
-            auto it2 = d2.find(secName);
-            const std::vector<std::string>& entries2 = (it2 != d2.end()) ? it2->second : std::vector<std::string>{};
-
-            size_t n = std::min(entries1.size(), entries2.size());
-            for (size_t i = 0; i < n; ++i) {
-                const RelEntry& r1 = entries1[i];
-                std::printf("  %-6llu %s    type=%2u, val=%s\n",
-                            static_cast<unsigned long long>(r1.offset), r1.symName.c_str(),
-                            static_cast<unsigned>(r1.type), toHex(r1.val).c_str());
-                std::cout << "  " << entries2[i] << std::endl;
-                std::cout << std::endl;
+        bool everySectionMatches = true;
+        for (const auto& [secName, elfEntries] : fromElf) {
+            const auto it = fromDump.find(secName);
+            if (it == fromDump.end() || it->second != elfEntries) {
+                everySectionMatches = false;
             }
         }
+        t.check(fname + ": every REL section's (offset, symbol) pairs, parsed independently via "
+                "ELFIO, exactly match cuobjdump's own dump of the same section",
+                everySectionMatches);
     }
 
-    return 0;
+    t.check("at least one .cubin fixture was actually found and checked under " + dir, cubinsChecked > 0);
+
+    return t.finish("test_relocation");
 }

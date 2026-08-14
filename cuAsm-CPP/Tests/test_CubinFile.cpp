@@ -1,55 +1,67 @@
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 
 #include "../CuAsm/CubinFile.hpp"
+#include "utils/TestUtilsCommon.hpp"
 
 namespace fs = std::filesystem;
 
-/**
- * @brief Replaces all occurrences of a substring within a string.
- * @param s String to search within.
- * @param from Substring to replace.
- * @param to Replacement substring.
- * @return The resulting string, with every occurrence of from replaced by to.
- **/
-std::string replaceAll(std::string s, const std::string& from, const std::string& to) {
-    size_t pos = 0;
-    while ((pos = s.find(from, pos)) != std::string::npos) {
-        s.replace(pos, from.size(), to);
-        pos += to.size();
-    }
-    return s;
+namespace {
+
+std::string readAll(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
 }
 
-/**
- * @brief Disassembles a cubin file and saves the result as a .cuasm file alongside it.
- * @param binname Path of the input cubin file.
- **/
-void cubin2cuasm(const std::string& binname) {
-    // print('Processing %s...' % binname)
-    CuAsm::CubinFile cf(binname);
-    // cf.initCuKernelAsm('CuAsm/InsAsmRepos.txt');
-    // cf.loadCubin(binname);
-
-    std::string asmname = replaceAll(binname, ".cubin", ".cuasm");
-    // print('Saving to %s...' % asmname)
-    cf.saveAsCuAsm(asmname);
-}
+} // namespace
 
 /**
- * @brief Converts every .cubin file in the CuTest test data directory to .cuasm, mirroring the
- *        original Tests/test_CubinFile.py script.
- * @return 0 on success.
+ * @brief Exercises CuAsm::CubinFile against the real cudatest.6.sm_61.cubin fixture. Previously
+ *        this file only disassembled every .cubin under TestData/CuTest with no assertion beyond
+ *        "didn't throw"; a regression that silently produced wrong (but well-formed) disassembly
+ *        would not have failed the build. The expected values below (toolkit version, virtual SM
+ *        version, kernel/section names) were cross-checked against the fixture's own
+ *        cuobjdump -elf output and its known-good .cuasm header comment
+ *        (".__elf_flags 0x3d053d // Flags, SM_61(0x3d), COMPUTE_61(0x3d)"), not just re-derived
+ *        from CubinFile itself.
+ * @return 0 if every check passed, 1 otherwise.
  **/
 int main() {
-    const std::string fdir = std::string(CUASM_TESTDATA_DIR) + "/CuTest";
+    CuAsm::Test::TestReporter t;
+
+    const std::string cubinPath = std::string(CUASM_TESTDATA_DIR) + "/CuTest/cudatest.6.sm_61.cubin";
+    const std::string asmPath = std::string(CUASM_TESTDATA_DIR) + "/CuTest/tmp_test_cubinfile.cuasm";
+
+    CuAsm::CubinFile cf(cubinPath);
+    t.check("loading the fixture cubin resolves its arch/virtual-SM/toolkit version fields correctly",
+            cf.m_Arch.has_value() && cf.m_Arch->getVersionNumber() == 61 && cf.m_VirtualSMVersion == 61 &&
+                cf.m_ToolKitVersion == 111);
+
+    cf.saveAsCuAsm(asmPath);
+    t.check("saveAsCuAsm() writes a non-trivially-sized .cuasm file", fs::exists(asmPath) && fs::file_size(asmPath) > 1000);
+
+    const std::string cuasm = readAll(asmPath);
+    t.check("the generated .cuasm carries the same ELF flags as the source cubin (SM_61)",
+            cuasm.find(".__elf_flags") != std::string::npos && cuasm.find("0x3d053d") != std::string::npos);
+    t.check("the generated .cuasm declares .text sections for kernels known to be in this fixture "
+            "(argtest, local_test, from the CuTest cudatest.cu source)",
+            cuasm.find(".text._Z7argtestPiS_S_") != std::string::npos &&
+                cuasm.find(".text._Z10local_testiiPi") != std::string::npos);
+    t.check("the generated .cuasm includes .nv.info sections", cuasm.find(".nv.info") != std::string::npos);
+
+    // Disassembling the same cubin twice must be deterministic.
+    CuAsm::CubinFile cf2(cubinPath);
+    const std::string asmPath2 = std::string(CUASM_TESTDATA_DIR) + "/CuTest/tmp_test_cubinfile2.cuasm";
+    cf2.saveAsCuAsm(asmPath2);
+    t.checkEqual("disassembling the same cubin twice produces byte-identical .cuasm output", readAll(asmPath2), cuasm);
 
     std::error_code ec;
-    for (const auto& entry : fs::directory_iterator(fdir, ec)) {
-        if (entry.path().extension() == ".cubin") {
-            cubin2cuasm(entry.path().string());
-        }
-    }
+    fs::remove(asmPath, ec);
+    fs::remove(asmPath2, ec);
 
-    return 0;
+    return t.finish("test_CubinFile");
 }

@@ -37,5 +37,25 @@ add_executable(test_UnsupportedArch test_UnsupportedArch.cpp)
 target_link_libraries(test_UnsupportedArch PRIVATE CuAsm)
 add_test(NAME test_UnsupportedArch COMMAND test_UnsupportedArch)
 
+add_executable(test_CuControlCode test_CuControlCode.cpp)
+target_link_libraries(test_CuControlCode PRIVATE CuAsm)
+add_test(NAME test_CuControlCode COMMAND test_CuControlCode)
+
+add_executable(test_CuNVInfo test_CuNVInfo.cpp)
+target_link_libraries(test_CuNVInfo PRIVATE CuAsm elfio::elfio)
+add_test(NAME test_CuNVInfo COMMAND test_CuNVInfo)
+
+add_executable(test_common test_common.cpp)
+target_link_libraries(test_common PRIVATE CuAsm)
+add_test(NAME test_common COMMAND test_common)
+
+add_executable(test_config test_config.cpp)
+target_link_libraries(test_config PRIVATE CuAsm)
+add_test(NAME test_config COMMAND test_config)
+
+add_executable(test_CuInsFeeder test_CuInsFeeder.cpp)
+target_link_libraries(test_CuInsFeeder PRIVATE CuAsm)
+add_test(NAME test_CuInsFeeder COMMAND test_CuInsFeeder)
+
 add_subdirectory(utils)
 add_subdirectory(CheckDisasm)
