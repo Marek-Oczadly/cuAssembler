@@ -57,5 +57,9 @@ add_executable(test_CuInsFeeder test_CuInsFeeder.cpp)
 target_link_libraries(test_CuInsFeeder PRIVATE CuAsm)
 add_test(NAME test_CuInsFeeder COMMAND test_CuInsFeeder)
 
+add_executable(test_OperandRole test_OperandRole.cpp)
+target_link_libraries(test_OperandRole PRIVATE CuAsm)
+add_test(NAME test_OperandRole COMMAND test_OperandRole)
+
 add_subdirectory(utils)
 add_subdirectory(CheckDisasm)

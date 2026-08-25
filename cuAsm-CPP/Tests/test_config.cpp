@@ -12,8 +12,10 @@ using CuAsm::Config;
  * @brief Exercises CuAsm::Config: the hard-coded default ELF headers (parsed once from a literal
  *        byte sequence, mirroring the python original's approach), and the InsAsmRepos/IOInfo
  *        path-resolution helpers, checked against the actual files shipped under
- *        CuAsm/InsAsmRepos/ (DefaultInsAsmRepos.sm_{60,61,70,75,80,86}.txt, and no IOInfo.* files
- *        at all - meaning getDefaultIOInfoFile should always fall back to IOInfo.all.json).
+ *        CuAsm/InsAsmRepos/ (DefaultInsAsmRepos.sm_{60,61,70,75,80,86}.txt; IOInfo.sm_{75,80,86}.txt
+ *        per Reports/tasks.md Phase 0, but no IOInfo.* file for every other version number - this
+ *        test only checks version numbers without one, so it still always falls back to
+ *        IOInfo.all.json).
  * @return 0 if every check passed, 1 otherwise.
  **/
 int main() {
