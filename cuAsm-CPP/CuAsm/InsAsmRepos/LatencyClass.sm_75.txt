@@ -10,7 +10,12 @@
 #
 # Grammar: `InsKey: FIXED` or `InsKey: VARIABLE:READ` or `InsKey: VARIABLE:WRITE`.
 
-# ==== Arithmetic/logic + compare-and-branch: 267 auto-filled as FIXED ====
+# ==== Arithmetic/logic + compare-and-branch: 267 auto-filled, 18 later corrected to VARIABLE:WRITE ====
+#
+# S2R/S2UR/MUFU/I2F/F2I/DMUL/F2F were originally auto-filled FIXED along with the rest of this
+# bucket, but real disassembled sm_75 control codes (TestData/CuTest/cudatest.7.sm_75.cuasm) show
+# them consistently setting a write barrier -- they execute on the contended SFU/DP pipe, not the
+# fast ALU/FMA pipe the rest of this bucket uses. See Reports/tasks.md Phase 1.1.
 
 BMSK_R_R_II: FIXED  # e.g. "BMSK R3, R2, 0x1 ;"
 BMSK_R_R_R: FIXED  # e.g. "BMSK R6, R7, R6 ;"
@@ -27,18 +32,18 @@ DFMA_R_R_R_UR: FIXED  # e.g. "DFMA R58, R16, R16, UR4 ;"
 DFMA_R_R_R_cAI: FIXED  # e.g. "DFMA R16, R14, R16, c[0x2][0x18] ;"
 DFMA_R_R_UR_R: FIXED  # e.g. "DFMA R38, R24, UR8, RZ ;"
 DFMA_R_R_cAI_R: FIXED  # e.g. "DFMA R10, R6, c[0x0][0x160], R10 ;"
-DMUL_R_R_FI: FIXED  # e.g. "DMUL R6, R6, 4 ;"
-DMUL_R_R_R: FIXED  # e.g. "@!P0 DMUL R2, R16, R6 ;"
-DMUL_R_R_UR: FIXED  # e.g. "DMUL R138, R10, UR14 ;"
-DMUL_R_R_cAI: FIXED  # e.g. "DMUL R10, R4, c[0x0][0x168] ;"
+DMUL_R_R_FI: VARIABLE:WRITE  # corrected from an earlier FIXED auto-fill -- see Reports/tasks.md Phase 1.1  # e.g. "DMUL R6, R6, 4 ;"
+DMUL_R_R_R: VARIABLE:WRITE  # e.g. "@!P0 DMUL R2, R16, R6 ;"
+DMUL_R_R_UR: VARIABLE:WRITE  # e.g. "DMUL R138, R10, UR14 ;"
+DMUL_R_R_cAI: VARIABLE:WRITE  # e.g. "DMUL R10, R4, c[0x0][0x168] ;"
 DSETP_P_P_R_FI_P: FIXED  # e.g. "DSETP.EQ.AND P1, PT, R4, 1, PT ;"
 DSETP_P_P_R_R_P: FIXED  # e.g. "DSETP.NEU.AND P0, PT, R4, RZ, PT ;"
 DSETP_P_P_R_UR_P: FIXED  # e.g. "DSETP.NEU.AND P0, PT, RZ, UR8, PT ;"
 DSETP_P_P_R_cAI_P: FIXED  # e.g. "DSETP.NEU.AND P0, PT, RZ, c[0x0][0x168], PT ;"
-F2F_R_R: FIXED  # e.g. "F2F.F16.F32 R0, R0 ;"
-F2F_R_cAI: FIXED  # e.g. "F2F.F64.F32 R6, c[0x0][0x180] ;"
-F2I_R_R: FIXED  # e.g. "F2I.FTZ.U32.TRUNC.NTZ R19, R18 ;"
-F2I_R_cAI: FIXED  # e.g. "F2I.TRUNC.NTZ R8, c[0x0][0x1bc] ;"
+F2F_R_R: VARIABLE:WRITE  # corrected from an earlier FIXED auto-fill -- see Reports/tasks.md Phase 1.1  # e.g. "F2F.F16.F32 R0, R0 ;"
+F2F_R_cAI: VARIABLE:WRITE  # e.g. "F2F.F64.F32 R6, c[0x0][0x180] ;"
+F2I_R_R: VARIABLE:WRITE  # corrected from an earlier FIXED auto-fill -- see Reports/tasks.md Phase 1.1  # e.g. "F2I.FTZ.U32.TRUNC.NTZ R19, R18 ;"
+F2I_R_cAI: VARIABLE:WRITE  # e.g. "F2I.TRUNC.NTZ R8, c[0x0][0x1bc] ;"
 FADD_R_R_FI: FIXED  # e.g. "FADD R20, R10, -1.9738116264343261719 ;"
 FADD_R_R_R: FIXED  # e.g. "FADD R0, -R0, -RZ ;"
 FADD_R_R_UR: FIXED  # e.g. "FADD R5, RZ, UR4 ;"
@@ -99,10 +104,10 @@ HSET2_R_R_cAI_P: FIXED  # e.g. "@P0 HSET2.BF.EQ.AND R28, RZ.H0_H0, c[0x0] [0x180
 HSETP2_P_P_R_FI_FI_P: FIXED  # e.g. "HSETP2.NEU.AND P0, PT, R5.H0_H0, 1, 1, PT ;"
 HSETP2_P_P_R_R_P: FIXED  # e.g. "@!P2 HSETP2.NEU.AND P1, PT, R6.H0_H0, RZ.H0_H0, PT ;"
 HSETP2_P_P_R_cAI_P: FIXED  # e.g. "HSETP2.NEU.AND P1, PT, RZ.H0_H0, c[0x0] [0x178].H1_H1, PT ;"
-I2F_R_II: FIXED  # e.g. "I2F.U32.RP R6, 0x20 ;"
-I2F_R_R: FIXED  # e.g. "I2F.S16 R18, R14 ;"
-I2F_R_UR: FIXED  # e.g. "I2F.U64.RP R24, UR4 ;"
-I2F_R_cAI: FIXED  # e.g. "I2F.U32 R20, c[0x0][0x0] ;"
+I2F_R_II: VARIABLE:WRITE  # corrected from an earlier FIXED auto-fill -- see Reports/tasks.md Phase 1.1  # e.g. "I2F.U32.RP R6, 0x20 ;"
+I2F_R_R: VARIABLE:WRITE  # e.g. "I2F.S16 R18, R14 ;"
+I2F_R_UR: VARIABLE:WRITE  # e.g. "I2F.U64.RP R24, UR4 ;"
+I2F_R_cAI: VARIABLE:WRITE  # e.g. "I2F.U32 R20, c[0x0][0x0] ;"
 I2IP_R_R_R_R: FIXED  # e.g. "I2IP.S8.S32.SAT R2, R24, R19, RZ ;"
 I2I_R_R: FIXED  # e.g. "I2I.U16.S32.SAT R10, R10 ;"
 IABS_R_R: FIXED  # e.g. "IABS R6, R5 ;"
@@ -198,10 +203,10 @@ MOV_R_R: FIXED  # e.g. "MOV R13, R3 ;"
 MOV_R_R_II: FIXED  # e.g. "MOV R37, R24, 0x1 ;"
 MOV_R_UR: FIXED  # e.g. "MOV R9, UR4 ;"
 MOV_R_cAI: FIXED  # e.g. "MOV R1, c[0x0][0x28] ;"
-MUFU_R_FI: FIXED  # e.g. "MUFU.RCP64H R5, 4.29496524800000000000e+09 ;"
-MUFU_R_R: FIXED  # e.g. "MUFU.RCP R5, R0 ;"
-MUFU_R_UR: FIXED  # e.g. "MUFU.RCP64H R35, UR15 ;"
-MUFU_R_cAI: FIXED  # e.g. "MUFU.RSQ64H R17, c[0x0][0x194] ;"
+MUFU_R_FI: VARIABLE:WRITE  # corrected from an earlier FIXED auto-fill -- see Reports/tasks.md Phase 1.1  # e.g. "MUFU.RCP64H R5, 4.29496524800000000000e+09 ;"
+MUFU_R_R: VARIABLE:WRITE  # e.g. "MUFU.RCP R5, R0 ;"
+MUFU_R_UR: VARIABLE:WRITE  # e.g. "MUFU.RCP64H R35, UR15 ;"
+MUFU_R_cAI: VARIABLE:WRITE  # e.g. "MUFU.RSQ64H R17, c[0x0][0x194] ;"
 P2R_R_L_R_II: FIXED  # e.g. "P2R R57, PR, RZ, 0x20 ;"
 PLOP3_P_P_P_P_P_II_II: FIXED  # e.g. "PLOP3.LUT P0, PT, P0, P1, PT, 0xa8, 0x0 ;"
 PLOP3_P_P_P_P_UP_II_II: FIXED  # e.g. "PLOP3.LUT P1, PT, PT, PT, UP1, 0x80, 0x0 ;"
@@ -215,8 +220,8 @@ PRMT_R_R_R_UR: FIXED  # e.g. "PRMT R37, R10.reuse, R37, UR7 ;"
 R2P_L_R: FIXED  # e.g. "R2P PR, R88 ;"
 R2P_L_R_II: FIXED  # e.g. "R2P PR, R0, 0x6 ;"
 R2UR_UR_R: FIXED  # e.g. "R2UR UR10, R5 ;"
-S2R_R_L: FIXED  # e.g. "S2R R0, SR_TID.X ;"
-S2UR_UR_L: FIXED  # e.g. "S2UR UR4, SR_CTAID.X ;"
+S2R_R_L: VARIABLE:WRITE  # corrected from an earlier FIXED auto-fill -- see Reports/tasks.md Phase 1.1  # e.g. "S2R R0, SR_TID.X ;"
+S2UR_UR_L: VARIABLE:WRITE  # e.g. "S2UR UR4, SR_CTAID.X ;"
 SEL_R_R_II_P: FIXED  # e.g. "SEL R0, RZ, 0x1, !P0 ;"
 SEL_R_R_R_P: FIXED  # e.g. "SEL R3, R4, RZ, P2 ;"
 SEL_R_R_UR_P: FIXED  # e.g. "SEL R6, R6, UR4, P0 ;"
@@ -280,142 +285,192 @@ USHF_UR_UR_UR_II: FIXED  # e.g. "USHF.L.U64.HI UR11, UR6, UR4, 0xffffffff ;"
 USHF_UR_UR_UR_UR: FIXED  # e.g. "USHF.L.U64.HI UR6, UR4, UR6, UR5 ;"
 VABSDIFF4_R_R_R_R: FIXED  # e.g. "VABSDIFF4.U8.ACC R21, R12, R21, RZ ;"
 
-# ==== Load/memory-read InsKeys -- needs manual review (variable latency, but not every InsKey here writes a destination register -- e.g. CCTL/QSPC do not -- so the barrier kind, or whether one applies at all, needs a real per-InsKey judgment): 61 TODO ====
+# ==== Load/memory-read: 61 curated ====
+#
+# Rule applied: any InsKey with a WRITE-role destination operand (per the already-curated
+# IOInfo.sm_75.txt) is VARIABLE:WRITE -- confirmed directly for LDG/LDC/LDL/TEX/SULD by real
+# disassembled sm_75 control codes (TestData/CuTest/cudatest.7.sm_75.cuasm), extended by family
+# analogy to ATOM/ATOMG/QSPC/LDSM/LD/TLD/TLD4/TXD/TXQ/ULDC, whose destination-bearing shape is
+# solid even where IOInfo's own leading-predicate role guess for that same InsKey is not (the
+# barrier-type call doesn't depend on which token the destination is, only that one exists).
+# CCTL/CCTL_ARI have zero WRITE-role operands (confirmed empty/address-only IOInfo entries) --
+# no operand for a barrier to protect, hence FIXED. RED_ARI_R/RED_AURI_R have an address plus an
+# asynchronously-consumed source value but no destination -- structurally a store, not a load,
+# hence VARIABLE:READ. See Reports/tasks.md Phase 1.1.
 
-# TODO ATOMG_P_R_ARI_R  e.g. "@P0 ATOMG.E.ADD.STRONG.GPU PT, R3, [R2+0x8], R7 ;"
-# TODO ATOMG_P_R_ARI_R_R  e.g. "ATOMG.E.CAS.STRONG.GPU PT, R5, [R2], R4, R5 ;"
-# TODO ATOMG_P_R_AURI_R  e.g. "@P0 ATOMG.E.ADD.STRONG.GPU PT, R4, [UR4], R4 ;"
-# TODO ATOMS_R_AI_R  e.g. "@!P0 ATOMS.MIN.S32 RZ, [0x5008], R28 ;"
-# TODO ATOMS_R_ARI_R  e.g. "@!P1 ATOMS.MAX.S32 RZ, [RZ], R2 ;"
-# TODO ATOMS_R_ARI_R_R  e.g. "ATOMS.CAST.SPIN R3, [R0], R2, R3 ;"
-# TODO ATOMS_R_ARURI_R  e.g. "ATOMS.ADD RZ, [R3.X4+UR8], R2 ;"
-# TODO ATOMS_R_AURI_R  e.g. "@P0 ATOMS.ADD R21, [UR6], RZ ;"
-# TODO ATOM_P_R_ARI_R  e.g. "ATOM.E.ADD.F16x2.RN.STRONG.GPU P0, RZ, [R2], R6 ;"
-# TODO ATOM_P_R_ARI_R_R  e.g. "ATOM.E.CAS.STRONG.GPU PT, R0, [R6], R3, R0 ;"
-# TODO ATOM_P_R_AURI_R  e.g. "@P2 ATOM.E.ADD.STRONG.GPU PT, R6, [UR12+0x4], R3 ;"
-# TODO CCTL  e.g. "CCTL.IVALL ;"
-# TODO CCTL_ARI  e.g. "CCTL.E.IV [R186] ;"
-# TODO LDC_R_cAI  e.g. "LDC.U8 R0, c[0x0][0x180] ;"
-# TODO LDC_R_cARI  e.g. "@!P4 LDC.64 R16, c[0x3][R17] ;"
-# TODO LDG_R_ARI  e.g. "LDG.E.128.CONSTANT.SYS R12, [R14] ;"
-# TODO LDG_R_ARI_P  e.g. "LDG.E.LTC128B.128.CONSTANT.GPU R128, [R144], P3 ;"
-# TODO LDG_R_ARURI  e.g. "LDG.E.128.CONSTANT.SYS R8, [R14.64+UR4] ;"
-# TODO LDG_R_ARURI_P  e.g. "LDG.E.64.SYS R2, [R252.U32+UR12+0x18e0], P1 ;"
-# TODO LDG_R_AURI  e.g. "LDG.E.SYS R0, [UR4] ;"
-# TODO LDL_R_ARI  e.g. "LDL.LU.64 R58, [R1] ;"
-# TODO LDL_R_ARURI  e.g. "LDL R20, [R6+UR5+0x4] ;"
-# TODO LDL_R_AURI  e.g. "LDL R4, [UR6+0x4] ;"
-# TODO LDSM_R_ARI  e.g. "LDSM.16.M88.4 R68, [R68] ;"
-# TODO LDSM_R_ARURI  e.g. "LDSM.16.M88.4 R80, [R67+UR5] ;"
-# TODO LDSM_R_AURI  e.g. "LDSM.16.M88 R19, [UR6] ;"
-# TODO LDS_R_AI  e.g. "LDS.U.128 R28, [0x10] ;"
-# TODO LDS_R_ARI  e.g. "@!P1 LDS.U.128 R12, [R2] ;"
-# TODO LDS_R_ARURI  e.g. "LDS.U.64 R42, [R90+UR7] ;"
-# TODO LDS_R_AURI  e.g. "LDS.U.128 R8, [UR5] ;"
-# TODO LD_R_ARI  e.g. "LD.E.SYS R12, [R12] ;"
-# TODO LD_R_ARURI  e.g. "LD.E.U8.STRONG.GPU R35, [R20.64+UR4+0x20] ;"
-# TODO LD_R_AURI  e.g. "LD.E.STRONG.SYS R3, [UR12+0x4] ;"
-# TODO QSPC_P_R_ARI  e.g. "QSPC.E.S P0, RZ, [R2] ;"
-# TODO QSPC_P_R_AURI  e.g. "QSPC.E.S P0, RZ, [UR8] ;"
-# TODO RED_ARI_R  e.g. "RED.E.ADD.F64.RN.STRONG.GPU [R2], R4 ;"
-# TODO RED_AURI_R  e.g. "@!P0 RED.E.MAX.S32.STRONG.GPU [UR4+0x4], R11 ;"
-# TODO SULD_R_ARI_II_II  e.g. "SULD.D.BA.1D_ARRAY.U16.STRONG.CTA R42, [R10], 0x0, 0x5a ;"
-# TODO SULD_R_ARI_R  e.g. "SULD.D.BA.1D_ARRAY.U16.STRONG.CTA R64, [R32], R0 ;"
-# TODO SULD_R_ARI_UR_II  e.g. "SULD.D.BA.1D_ARRAY.U16.STRONG.CTA R5, [R14], UR4, 0x0 ;"
-# TODO TEX_R_R_R_R_II_II_L  e.g. "TEX.SCR.LL.DC R28, R30, R2, R28, 0x0, 0x58, 2D ;"
-# TODO TEX_R_R_R_R_II_II_L_II  e.g. "TEX.SCR.LL RZ, R3, R4, R8, 0x0, 0x62, 2D, 0x1 ;"
-# TODO TEX_R_R_R_R_L  e.g. "TEX.B.LL.DC R8, R10, R2, R56, 2D ;"
-# TODO TEX_R_R_R_R_UR_II_L  e.g. "TEX.SCR.LL.DC R30, R28, R28, R30, UR4, 0x0, 2D ;"
-# TODO TLD4_R_R_R_R_II_II_L  e.g. "TLD4.SCR.A.AOFFI R44, R42, R70, R13, 0x0, 0x58, 2D ;"
-# TODO TLD4_R_R_R_R_L  e.g. "TLD4.SCR.A.B.AOFFI R14, R10, R70, R10, 2D ;"
-# TODO TLD4_R_R_R_R_UR_II_L  e.g. "TLD4.SCR.A.AOFFI R14, R8, R70, R13, UR4, 0x0, 2D ;"
-# TODO TLD_R_R_R_II_II_L  e.g. "TLD.SCR.LZ R18, R16, R4, 0x0, 0x58, 1D ;"
-# TODO TLD_R_R_R_II_II_L_II  e.g. "TLD.SCR.LZ RZ, R14, R11, 0x0, 0x64, 1D, 0x3 ;"
-# TODO TLD_R_R_R_R_II_II_L  e.g. "TLD.SCR.LZ.AOFFI R16, R10, R2, R14, 0x0, 0x58, 1D ;"
-# TODO TLD_R_R_R_R_L  e.g. "TLD.SCR.B.LZ.AOFFI R4, R16, R20, R14, 1D ;"
-# TODO TLD_R_R_R_R_UR_II_L  e.g. "TLD.SCR.LZ.AOFFI R26, R24, R2, R14, UR6, 0x0, 1D ;"
-# TODO TLD_R_R_R_UR_II_L  e.g. "TLD.SCR.LZ R12, R8, R4, UR6, 0x0, 1D ;"
-# TODO TXD_R_R_R_R_II_II_L  e.g. "TXD.AOFFI R26, R40, R40, R24, 0x0, 0x58, 2D ;"
-# TODO TXD_R_R_R_R_L  e.g. "TXD.B.AOFFI R6, R4, R16, R4, 2D ;"
-# TODO TXD_R_R_R_R_UR_II_L  e.g. "TXD.AOFFI R12, R14, R52, R12, UR4, 0x0, 2D ;"
-# TODO TXQ_R_R_R_L_II  e.g. "TXQ.B RZ, R13, R22, TEX_HEADER_DIMENSION, 0x2 ;"
-# TODO TXQ_R_R_R_L_II_II_II  e.g. "TXQ RZ, R23, R28, TEX_HEADER_DIMENSION, 0x0, 0x58, 0x2 ;"
-# TODO TXQ_R_R_R_L_UR_II_II  e.g. "TXQ RZ, R37, R37, TEX_HEADER_DIMENSION, UR22, 0x0, 0x2 ;"
-# TODO ULDC_UR_cAI  e.g. "ULDC UR5, c[0x0][0x0] ;"
-# TODO ULDC_UR_cAURI  e.g. "ULDC UR5, c[0x3][UR4+0x4] ;"
+ATOMG_P_R_ARI_R: VARIABLE:WRITE  # e.g. "@P0 ATOMG.E.ADD.STRONG.GPU PT, R3, [R2+0x8], R7 ;"
+ATOMG_P_R_ARI_R_R: VARIABLE:WRITE  # e.g. "ATOMG.E.CAS.STRONG.GPU PT, R5, [R2], R4, R5 ;"
+ATOMG_P_R_AURI_R: VARIABLE:WRITE  # e.g. "@P0 ATOMG.E.ADD.STRONG.GPU PT, R4, [UR4], R4 ;"
+ATOMS_R_AI_R: VARIABLE:WRITE  # e.g. "@!P0 ATOMS.MIN.S32 RZ, [0x5008], R28 ;"
+ATOMS_R_ARI_R: VARIABLE:WRITE  # e.g. "@!P1 ATOMS.MAX.S32 RZ, [RZ], R2 ;"
+ATOMS_R_ARI_R_R: VARIABLE:WRITE  # e.g. "ATOMS.CAST.SPIN R3, [R0], R2, R3 ;"
+ATOMS_R_ARURI_R: VARIABLE:WRITE  # e.g. "ATOMS.ADD RZ, [R3.X4+UR8], R2 ;"
+ATOMS_R_AURI_R: VARIABLE:WRITE  # e.g. "@P0 ATOMS.ADD R21, [UR6], RZ ;"
+ATOM_P_R_ARI_R: VARIABLE:WRITE  # e.g. "ATOM.E.ADD.F16x2.RN.STRONG.GPU P0, RZ, [R2], R6 ;"
+ATOM_P_R_ARI_R_R: VARIABLE:WRITE  # e.g. "ATOM.E.CAS.STRONG.GPU PT, R0, [R6], R3, R0 ;"
+ATOM_P_R_AURI_R: VARIABLE:WRITE  # e.g. "@P2 ATOM.E.ADD.STRONG.GPU PT, R6, [UR12+0x4], R3 ;"
+CCTL: FIXED  # no operand at all to protect with a barrier  # e.g. "CCTL.IVALL ;"
+CCTL_ARI: FIXED  # address-only, no destination  # e.g. "CCTL.E.IV [R186] ;"
+LDC_R_cAI: VARIABLE:WRITE  # e.g. "LDC.U8 R0, c[0x0][0x180] ;"
+LDC_R_cARI: VARIABLE:WRITE  # e.g. "@!P4 LDC.64 R16, c[0x3][R17] ;"
+LDG_R_ARI: VARIABLE:WRITE  # confirmed: "LDG.E.SYS R5, [R18] ;" -> W4 in real sm_75 control codes  # e.g. "LDG.E.128.CONSTANT.SYS R12, [R14] ;"
+LDG_R_ARI_P: VARIABLE:WRITE  # e.g. "LDG.E.LTC128B.128.CONSTANT.GPU R128, [R144], P3 ;"
+LDG_R_ARURI: VARIABLE:WRITE  # e.g. "LDG.E.128.CONSTANT.SYS R8, [R14.64+UR4] ;"
+LDG_R_ARURI_P: VARIABLE:WRITE  # e.g. "LDG.E.64.SYS R2, [R252.U32+UR12+0x18e0], P1 ;"
+LDG_R_AURI: VARIABLE:WRITE  # e.g. "LDG.E.SYS R0, [UR4] ;"
+LDL_R_ARI: VARIABLE:WRITE  # confirmed: "LDL R2, [R1] ;" -> W2/W-only in real sm_75 control codes  # e.g. "LDL.LU.64 R58, [R1] ;"
+LDL_R_ARURI: VARIABLE:WRITE  # e.g. "LDL R20, [R6+UR5+0x4] ;"
+LDL_R_AURI: VARIABLE:WRITE  # e.g. "LDL R4, [UR6+0x4] ;"
+LDSM_R_ARI: VARIABLE:WRITE  # e.g. "LDSM.16.M88.4 R68, [R68] ;"
+LDSM_R_ARURI: VARIABLE:WRITE  # e.g. "LDSM.16.M88.4 R80, [R67+UR5] ;"
+LDSM_R_AURI: VARIABLE:WRITE  # e.g. "LDSM.16.M88 R19, [UR6] ;"
+LDS_R_AI: VARIABLE:WRITE  # e.g. "LDS.U.128 R28, [0x10] ;"
+LDS_R_ARI: VARIABLE:WRITE  # confirmed: a real sm_75 LDS instance sets a write barrier  # e.g. "@!P1 LDS.U.128 R12, [R2] ;"
+LDS_R_ARURI: VARIABLE:WRITE  # e.g. "LDS.U.64 R42, [R90+UR7] ;"
+LDS_R_AURI: VARIABLE:WRITE  # e.g. "LDS.U.128 R8, [UR5] ;"
+LD_R_ARI: VARIABLE:WRITE  # e.g. "LD.E.SYS R12, [R12] ;"
+LD_R_ARURI: VARIABLE:WRITE  # e.g. "LD.E.U8.STRONG.GPU R35, [R20.64+UR4+0x20] ;"
+LD_R_AURI: VARIABLE:WRITE  # e.g. "LD.E.STRONG.SYS R3, [UR12+0x4] ;"
+QSPC_P_R_ARI: VARIABLE:WRITE  # e.g. "QSPC.E.S P0, RZ, [R2] ;"
+QSPC_P_R_AURI: VARIABLE:WRITE  # e.g. "QSPC.E.S P0, RZ, [UR8] ;"
+RED_ARI_R: VARIABLE:READ  # no destination -- structurally a store (address + async-consumed value)  # e.g. "RED.E.ADD.F64.RN.STRONG.GPU [R2], R4 ;"
+RED_AURI_R: VARIABLE:READ  # e.g. "@!P0 RED.E.MAX.S32.STRONG.GPU [UR4+0x4], R11 ;"
+SULD_R_ARI_II_II: VARIABLE:WRITE  # e.g. "SULD.D.BA.1D_ARRAY.U16.STRONG.CTA R42, [R10], 0x0, 0x5a ;"
+SULD_R_ARI_R: VARIABLE:WRITE  # e.g. "SULD.D.BA.1D_ARRAY.U16.STRONG.CTA R64, [R32], R0 ;"
+SULD_R_ARI_UR_II: VARIABLE:WRITE  # e.g. "SULD.D.BA.1D_ARRAY.U16.STRONG.CTA R5, [R14], UR4, 0x0 ;"
+TEX_R_R_R_R_II_II_L: VARIABLE:WRITE  # confirmed: "TEX.SCR.LL RZ, ... ;" -> W5 in real sm_75 control codes  # e.g. "TEX.SCR.LL.DC R28, R30, R2, R28, 0x0, 0x58, 2D ;"
+TEX_R_R_R_R_II_II_L_II: VARIABLE:WRITE  # e.g. "TEX.SCR.LL RZ, R3, R4, R8, 0x0, 0x62, 2D, 0x1 ;"
+TEX_R_R_R_R_L: VARIABLE:WRITE  # e.g. "TEX.B.LL.DC R8, R10, R2, R56, 2D ;"
+TEX_R_R_R_R_UR_II_L: VARIABLE:WRITE  # e.g. "TEX.SCR.LL.DC R30, R28, R28, R30, UR4, 0x0, 2D ;"
+TLD4_R_R_R_R_II_II_L: VARIABLE:WRITE  # e.g. "TLD4.SCR.A.AOFFI R44, R42, R70, R13, 0x0, 0x58, 2D ;"
+TLD4_R_R_R_R_L: VARIABLE:WRITE  # e.g. "TLD4.SCR.A.B.AOFFI R14, R10, R70, R10, 2D ;"
+TLD4_R_R_R_R_UR_II_L: VARIABLE:WRITE  # e.g. "TLD4.SCR.A.AOFFI R14, R8, R70, R13, UR4, 0x0, 2D ;"
+TLD_R_R_R_II_II_L: VARIABLE:WRITE  # e.g. "TLD.SCR.LZ R18, R16, R4, 0x0, 0x58, 1D ;"
+TLD_R_R_R_II_II_L_II: VARIABLE:WRITE  # e.g. "TLD.SCR.LZ RZ, R14, R11, 0x0, 0x64, 1D, 0x3 ;"
+TLD_R_R_R_R_II_II_L: VARIABLE:WRITE  # e.g. "TLD.SCR.LZ.AOFFI R16, R10, R2, R14, 0x0, 0x58, 1D ;"
+TLD_R_R_R_R_L: VARIABLE:WRITE  # e.g. "TLD.SCR.B.LZ.AOFFI R4, R16, R20, R14, 1D ;"
+TLD_R_R_R_R_UR_II_L: VARIABLE:WRITE  # e.g. "TLD.SCR.LZ.AOFFI R26, R24, R2, R14, UR6, 0x0, 1D ;"
+TLD_R_R_R_UR_II_L: VARIABLE:WRITE  # e.g. "TLD.SCR.LZ R12, R8, R4, UR6, 0x0, 1D ;"
+TXD_R_R_R_R_II_II_L: VARIABLE:WRITE  # e.g. "TXD.AOFFI R26, R40, R40, R24, 0x0, 0x58, 2D ;"
+TXD_R_R_R_R_L: VARIABLE:WRITE  # e.g. "TXD.B.AOFFI R6, R4, R16, R4, 2D ;"
+TXD_R_R_R_R_UR_II_L: VARIABLE:WRITE  # e.g. "TXD.AOFFI R12, R14, R52, R12, UR4, 0x0, 2D ;"
+TXQ_R_R_R_L_II: VARIABLE:WRITE  # e.g. "TXQ.B RZ, R13, R22, TEX_HEADER_DIMENSION, 0x2 ;"
+TXQ_R_R_R_L_II_II_II: VARIABLE:WRITE  # e.g. "TXQ RZ, R23, R28, TEX_HEADER_DIMENSION, 0x0, 0x58, 0x2 ;"
+TXQ_R_R_R_L_UR_II_II: VARIABLE:WRITE  # e.g. "TXQ RZ, R37, R37, TEX_HEADER_DIMENSION, UR22, 0x0, 0x2 ;"
+ULDC_UR_cAI: VARIABLE:WRITE  # e.g. "ULDC UR5, c[0x0][0x0] ;"
+ULDC_UR_cAURI: VARIABLE:WRITE  # e.g. "ULDC UR5, c[0x3][UR4+0x4] ;"
 
-# ==== Store InsKeys -- needs manual review (variable latency; whether the source operand needs a READ barrier may not generalize identically to every store variant): 16 TODO ====
+# ==== Load/memory-read InsKeys not curated: 0 TODO ====
 
-# TODO STG_ARI_R  e.g. "STG.E.128.SYS [R4], R12 ;"
-# TODO STG_ARURI_R  e.g. "STG.E.SYS [R2.64+UR6], R7 ;"
-# TODO STG_AURI_R  e.g. "STG.E.SYS [UR4], R0 ;"
-# TODO STL_ARI_R  e.g. "STL.64 [R1], R10 ;"
-# TODO STL_ARURI_R  e.g. "STL [R6+UR5+0x4], R19 ;"
-# TODO STL_AURI_R  e.g. "STL [UR6], RZ ;"
-# TODO STS_AI_R  e.g. "@!P1 STS [0x5000], R63 ;"
-# TODO STS_ARI_R  e.g. "STS.128 [R8.X16], R4 ;"
-# TODO STS_ARURI_R  e.g. "STS.64 [R95+UR7], R88 ;"
-# TODO STS_AURI_R  e.g. "STS.128 [UR5], R8 ;"
-# TODO ST_ARI_R  e.g. "ST.E.SYS [R2], R0 ;"
-# TODO ST_ARURI_R  e.g. "ST.E.U8.STRONG.GPU [R34.64+UR4+0x20], R22 ;"
-# TODO ST_AURI_R  e.g. "ST.E.128.STRONG.GPU [UR4+0x200], R4 ;"
-# TODO SUST_ARI_R_II_II  e.g. "SUST.D.BA.2D.STRONG.CTA.TRAP [R4], R2, 0x0, 0x5c ;"
-# TODO SUST_ARI_R_R  e.g. "SUST.D.BA.1D_ARRAY.U16.STRONG.CTA [R22], R7, R0 ;"
-# TODO SUST_ARI_R_UR_II  e.g. "SUST.D.BA.1D_ARRAY.U16.STRONG.CTA [R14], R7, UR16, 0x0 ;"
+# ==== Store: 16 curated ====
+#
+# All VARIABLE:READ -- protects the source value register still being consumed asynchronously by
+# the memory write (WAR case). Confirmed directly for STG/STL by real disassembled sm_75 control
+# codes (STL [R1], R2 -> R0 in TestData/CuTest/cudatest.7.sm_75.cuasm); STS/ST/SUST follow by
+# family analogy (same address+value shape, no destination). See Reports/tasks.md Phase 1.1.
 
-# ==== Control-flow InsKeys -- needs manual review (mixes ordinary fixed-latency branches/NOPs with BAR.SYNC/MEMBAR/DEPBAR, which are not scoreboard-barrier producers in the sense this table models at all): 36 TODO ====
+STG_ARI_R: VARIABLE:READ  # confirmed: "STG.E.SYS [R18], R3 ;" -> R1 in real sm_75 control codes  # e.g. "STG.E.128.SYS [R4], R12 ;"
+STG_ARURI_R: VARIABLE:READ  # e.g. "STG.E.SYS [R2.64+UR6], R7 ;"
+STG_AURI_R: VARIABLE:READ  # e.g. "STG.E.SYS [UR4], R0 ;"
+STL_ARI_R: VARIABLE:READ  # confirmed: "STL [R1], R2 ;" -> R0 in real sm_75 control codes  # e.g. "STL.64 [R1], R10 ;"
+STL_ARURI_R: VARIABLE:READ  # e.g. "STL [R6+UR5+0x4], R19 ;"
+STL_AURI_R: VARIABLE:READ  # e.g. "STL [UR6], RZ ;"
+STS_AI_R: VARIABLE:READ  # e.g. "@!P1 STS [0x5000], R63 ;"
+STS_ARI_R: VARIABLE:READ  # e.g. "STS.128 [R8.X16], R4 ;"
+STS_ARURI_R: VARIABLE:READ  # e.g. "STS.64 [R95+UR7], R88 ;"
+STS_AURI_R: VARIABLE:READ  # e.g. "STS.128 [UR5], R8 ;"
+ST_ARI_R: VARIABLE:READ  # e.g. "ST.E.SYS [R2], R0 ;"
+ST_ARURI_R: VARIABLE:READ  # e.g. "ST.E.U8.STRONG.GPU [R34.64+UR4+0x20], R22 ;"
+ST_AURI_R: VARIABLE:READ  # e.g. "ST.E.128.STRONG.GPU [UR4+0x200], R4 ;"
+SUST_ARI_R_II_II: VARIABLE:READ  # e.g. "SUST.D.BA.2D.STRONG.CTA.TRAP [R4], R2, 0x0, 0x5c ;"
+SUST_ARI_R_R: VARIABLE:READ  # e.g. "SUST.D.BA.1D_ARRAY.U16.STRONG.CTA [R22], R7, R0 ;"
+SUST_ARI_R_UR_II: VARIABLE:READ  # e.g. "SUST.D.BA.1D_ARRAY.U16.STRONG.CTA [R14], R7, UR16, 0x0 ;"
 
-# TODO B2R_R  e.g. "B2R.RESULT R11 ;"
-# TODO B2R_R_P  e.g. "B2R.RESULT RZ, P0 ;"
-# TODO BAR_II  e.g. "BAR.SYNC 0x0 ;"
-# TODO BAR_II_P  e.g. "BAR.RED.AND 0x0, P0 ;"
-# TODO BAR_R  e.g. "BAR.SYNC R0 ;"
-# TODO BAR_R_R  e.g. "BAR.SYNC R6, R6 ;"
-# TODO BMOV_B_L  e.g. "BMOV.32 B15, MACTIVE ;"
-# TODO BMOV_B_R  e.g. "BMOV.32 B6, R16 ;"
-# TODO BMOV_L_B  e.g. "BMOV.32.PQUAD MACTIVE, B15 ;"
-# TODO BMOV_R_B  e.g. "BMOV.32.CLEAR RZ, B0 ;"
-# TODO BPT_II  e.g. "BPT.TRAP 0x1 ;"
-# TODO BRA_II  e.g. "BRA 0xe0;"
-# TODO BRA_P_II  e.g. "@!P1 BRA !P2, 0x7b0 ;"
-# TODO BREAK_B  e.g. "@!P0 BREAK B0 ;"
-# TODO BREAK_P_B  e.g. "@!P0 BREAK P2, B2 ;"
-# TODO BRXU_UR_II  e.g. "BRXU UR8 -0x5570 ;"
-# TODO BRX_R_II  e.g. "BRX R14 -0x390 ;"
-# TODO BSSY_B_II  e.g. "BSSY B0, 0x9d0 ;"
-# TODO BSYNC_B  e.g. "BSYNC B1 ;"
-# TODO CALL_II  e.g. "CALL.REL.NOINC 0x1c0 ;"
-# TODO CALL_R  e.g. "CALL.ABS.NOINC R12 ;"
-# TODO CALL_R_II  e.g. "CALL.REL.NOINC R8 0x0 ;"
-# TODO DEPBAR_SB_II  e.g. "DEPBAR.LE SB5, 0x1 ;"
-# TODO DEPBAR_SB_II_SBSET  e.g. "DEPBAR.LE SB0, 0x0, {4,3,2,1} ;"
-# TODO ERRBAR  e.g. "ERRBAR;"
-# TODO EXIT  e.g. "@P0 EXIT ;"
-# TODO EXIT_P  e.g. "@!P0 EXIT P1 ;"
-# TODO LEPC_R  e.g. "LEPC R32 ;"
-# TODO MEMBAR  e.g. "MEMBAR.SC.CTA ;"
-# TODO NANOSLEEP_II  e.g. "NANOSLEEP.WARP 0xf4240 ;"
-# TODO NANOSLEEP_R  e.g. "NANOSLEEP.WARP R0 ;"
-# TODO NOP  e.g. "NOP;"
-# TODO RET_R_II  e.g. "RET.REL.NODEC R2 0x0 ;"
-# TODO WARPSYNC_II  e.g. "WARPSYNC 0xffffffff ;"
-# TODO WARPSYNC_R  e.g. "WARPSYNC R34 ;"
-# TODO YIELD  e.g. "@!P0 YIELD ;"
+# ==== Store InsKeys not curated: 0 TODO ====
 
-# ==== Tensor-core (MMA) InsKeys -- needs manual review (whether tensor-core pipes are fixed-latency or set a scoreboard barrier is genuinely uncertain without hardware docs): 3 TODO ====
+# ==== Control-flow: 36 curated ====
+#
+# All FIXED (no scoreboard barrier). Confirmed directly by real disassembled sm_75 control codes
+# for BAR/BMOV/BRA/BSSY/BSYNC/CALL/DEPBAR/EXIT/RET (TestData/CuTest/cudatest.7.sm_75.cuasm --
+# every occurrence shows no read/write barrier set, only the wait-mask field is ever used, which
+# this table doesn't model). The rest of the bucket is the same kind of op -- branch-unit control
+# flow, thread-block/warp barriers, or B-register convergence-barrier bookkeeping -- none of which
+# write a value via the async memory/SFU pipe the 6 scoreboard slots protect, so FIXED follows by
+# direct architectural consistency with the confirmed entries, not a guess. This also resolves the
+# 3 InsKeys IOInfo.sm_75.txt still flags as operand-role guesses (B2R_R_P/BAR_II_P/BREAK_P_B) --
+# their *latency* classification doesn't depend on what their uncertain operand's role turns out
+# to be. See Reports/tasks.md Phase 1.1.
 
-# TODO BMMA_R_R_R_R  e.g. "BMMA.88128.XOR.POPC R22, R4.ROW, R26.COL, R18 ;"
-# TODO HMMA_R_R_R_R  e.g. "HMMA.1688.F16 R2, R20, R24.reuse, R2 ;"
-# TODO IMMA_R_R_R_R  e.g. "IMMA.8816.S8.S8.SAT R2, R68.ROW, R72.reuse.COL, R2 ;"
+B2R_R: FIXED  # e.g. "B2R.RESULT R11 ;"
+B2R_R_P: FIXED  # e.g. "B2R.RESULT RZ, P0 ;"
+BAR_II: FIXED  # confirmed: "BAR.SYNC 0x0 ;" sets no barrier in real sm_75 control codes  # e.g. "BAR.SYNC 0x0 ;"
+BAR_II_P: FIXED  # e.g. "BAR.RED.AND 0x0, P0 ;"
+BAR_R: FIXED  # e.g. "BAR.SYNC R0 ;"
+BAR_R_R: FIXED  # e.g. "BAR.SYNC R6, R6 ;"
+BMOV_B_L: FIXED  # confirmed: "BMOV.32 B15, MACTIVE ;" sets no barrier in real sm_75 control codes  # e.g. "BMOV.32 B15, MACTIVE ;"
+BMOV_B_R: FIXED  # e.g. "BMOV.32 B6, R16 ;"
+BMOV_L_B: FIXED  # e.g. "BMOV.32.PQUAD MACTIVE, B15 ;"
+BMOV_R_B: FIXED  # e.g. "BMOV.32.CLEAR RZ, B0 ;"
+BPT_II: FIXED  # e.g. "BPT.TRAP 0x1 ;"
+BRA_II: FIXED  # confirmed: 11 real sm_75 BRA occurrences, none set a barrier  # e.g. "BRA 0xe0;"
+BRA_P_II: FIXED  # e.g. "@!P1 BRA !P2, 0x7b0 ;"
+BREAK_B: FIXED  # e.g. "@!P0 BREAK B0 ;"
+BREAK_P_B: FIXED  # e.g. "@!P0 BREAK P2, B2 ;"
+BRXU_UR_II: FIXED  # e.g. "BRXU UR8 -0x5570 ;"
+BRX_R_II: FIXED  # e.g. "BRX R14 -0x390 ;"
+BSSY_B_II: FIXED  # confirmed: "BSSY B0, 0x9d0 ;" sets no barrier in real sm_75 control codes  # e.g. "BSSY B0, 0x9d0 ;"
+BSYNC_B: FIXED  # confirmed: "BSYNC B1 ;" sets no barrier in real sm_75 control codes  # e.g. "BSYNC B1 ;"
+CALL_II: FIXED  # confirmed: real sm_75 CALL occurrences set no barrier  # e.g. "CALL.REL.NOINC 0x1c0 ;"
+CALL_R: FIXED  # e.g. "CALL.ABS.NOINC R12 ;"
+CALL_R_II: FIXED  # e.g. "CALL.REL.NOINC R8 0x0 ;"
+DEPBAR_SB_II: FIXED  # confirmed: "DEPBAR.LE SB5, 0x1 ;" sets no barrier in real sm_75 control codes -- DEPBAR consumes/waits on an existing barrier, it doesn't set one  # e.g. "DEPBAR.LE SB5, 0x1 ;"
+DEPBAR_SB_II_SBSET: FIXED  # e.g. "DEPBAR.LE SB0, 0x0, {4,3,2,1} ;"
+ERRBAR: FIXED  # e.g. "ERRBAR;"
+EXIT: FIXED  # confirmed: 8 real sm_75 EXIT occurrences, none set a barrier  # e.g. "@P0 EXIT ;"
+EXIT_P: FIXED  # e.g. "@!P0 EXIT P1 ;"
+LEPC_R: FIXED  # writes a deterministic PC value, not memory/SFU-pipe data  # e.g. "LEPC R32 ;"
+MEMBAR: FIXED  # e.g. "MEMBAR.SC.CTA ;"
+NANOSLEEP_II: FIXED  # e.g. "NANOSLEEP.WARP 0xf4240 ;"
+NANOSLEEP_R: FIXED  # e.g. "NANOSLEEP.WARP R0 ;"
+NOP: FIXED  # e.g. "NOP;"
+RET_R_II: FIXED  # confirmed: 7 real sm_75 RET occurrences, none set a barrier  # e.g. "RET.REL.NODEC R2 0x0 ;"
+WARPSYNC_II: FIXED  # e.g. "WARPSYNC 0xffffffff ;"
+WARPSYNC_R: FIXED  # e.g. "WARPSYNC R34 ;"
+YIELD: FIXED  # e.g. "@!P0 YIELD ;"
 
-# ==== Warp-shuffle/vote/match InsKeys -- needs manual review: 9 TODO ====
+# ==== Control-flow InsKeys not curated: 0 TODO ====
 
-# TODO MATCH_R_R  e.g. "MATCH.ANY R7, R13 ;"
-# TODO SHFL_P_R_R_II_II  e.g. "SHFL.DOWN P0, R8, R9, 0x1, 0x1e01 ;"
-# TODO SHFL_P_R_R_II_R  e.g. "SHFL.UP PT, R7, R8, 0x1, RZ ;"
-# TODO SHFL_P_R_R_R_II  e.g. "SHFL.IDX PT, R3, R10, RZ, 0x1f ;"
-# TODO SHFL_P_R_R_R_R  e.g. "SHFL.DOWN P1, R35, R36, R35, R6 ;"
-# TODO VOTEU_UP_P  e.g. "VOTEU.ANY UP0, P0 ;"
-# TODO VOTEU_UR_UP_P  e.g. "VOTEU.ALL UR4, UPT, PT ;"
-# TODO VOTE_P_P  e.g. "VOTE.ANY P0, P0 ;"
-# TODO VOTE_R_P_P  e.g. "VOTE.ANY R6, PT, P1 ;"
+# ==== Tensor-core (MMA): 3 curated ====
+#
+# All VARIABLE:WRITE -- tensor-core MMA ops are well-documented (CUTLASS docs, NVIDIA
+# architecture whitepapers, latency-hiding guidance) as high, multi-cycle-latency ops the compiler
+# must interleave with independent work; no real sm_75 MMA sample was in reach to confirm the
+# exact barrier bit directly, but every other destination-producing op observed in this table's
+# real evidence sets a write barrier, and tensor cores are a canonical textbook example of an
+# op needing one. See Reports/tasks.md Phase 1.1.
+
+BMMA_R_R_R_R: VARIABLE:WRITE  # e.g. "BMMA.88128.XOR.POPC R22, R4.ROW, R26.COL, R18 ;"
+HMMA_R_R_R_R: VARIABLE:WRITE  # e.g. "HMMA.1688.F16 R2, R20, R24.reuse, R2 ;"
+IMMA_R_R_R_R: VARIABLE:WRITE  # e.g. "IMMA.8816.S8.S8.SAT R2, R68.ROW, R72.reuse.COL, R2 ;"
+
+# ==== Tensor-core (MMA) InsKeys not curated: 0 TODO ====
+
+# ==== Warp-shuffle/vote/match: 9 curated ====
+#
+# All VARIABLE:WRITE. Confirmed directly for SHFL by a real disassembled sm_75 control code
+# (TestData/CuTest/cudatest.7.sm_75.cuasm). MATCH/VOTE/VOTEU are the same warp-collective
+# family -- they run through the same cross-lane permute/reduction network as SHFL -- so the
+# classification extends by structural analogy, not direct per-opcode confirmation.
+# See Reports/tasks.md Phase 1.1.
+
+MATCH_R_R: VARIABLE:WRITE  # e.g. "MATCH.ANY R7, R13 ;"
+SHFL_P_R_R_II_II: VARIABLE:WRITE  # confirmed: a real sm_75 SHFL instance sets a write barrier  # e.g. "SHFL.DOWN P0, R8, R9, 0x1, 0x1e01 ;"
+SHFL_P_R_R_II_R: VARIABLE:WRITE  # e.g. "SHFL.UP PT, R7, R8, 0x1, RZ ;"
+SHFL_P_R_R_R_II: VARIABLE:WRITE  # e.g. "SHFL.IDX PT, R3, R10, RZ, 0x1f ;"
+SHFL_P_R_R_R_R: VARIABLE:WRITE  # e.g. "SHFL.DOWN P1, R35, R36, R35, R6 ;"
+VOTEU_UP_P: VARIABLE:WRITE  # e.g. "VOTEU.ANY UP0, P0 ;"
+VOTEU_UR_UP_P: VARIABLE:WRITE  # e.g. "VOTEU.ALL UR4, UPT, PT ;"
+VOTE_P_P: VARIABLE:WRITE  # e.g. "VOTE.ANY P0, P0 ;"
+VOTE_R_P_P: VARIABLE:WRITE  # e.g. "VOTE.ANY R6, PT, P1 ;"
+
+# ==== Warp-shuffle/vote/match InsKeys not curated: 0 TODO ====

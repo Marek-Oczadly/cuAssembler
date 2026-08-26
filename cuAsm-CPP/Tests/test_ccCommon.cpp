@@ -150,9 +150,10 @@ int main() {
     // B2R_R_P is one of the few remaining IOInfo.sm_75.txt entries still commented out as an
     // unverified "guess" placeholder (control-flow bucket) rather than a live curated entry --
     // EXIT itself no longer works for this check since IOInfo.sm_75.txt now curates it (its role
-    // list is simply empty), even though LatencyClass.sm_75.txt still doesn't (control-flow bucket
-    // there is still almost entirely TODO), so decoding EXIT now throws from LatencyClassTable
-    // instead -- still a hard error, just not the one this specific check is about.
+    // list is simply empty). LatencyClass.sm_75.txt is now fully curated too (B2R_R_P included,
+    // as FIXED -- Reports/tasks.md Phase 1.1), so this exercises OperandRoleTable::lookup()'s
+    // hard error specifically: decode still checks operand roles regardless of what
+    // LatencyClassTable would say about the same InsKey.
     const std::string badSass = makeSass("badKernel", {addr0}, {"B2R.RESULT RZ, P0 ;"});
     t.checkThrows<std::out_of_range>(
         "decodeInstructionsFromSass() propagates OperandRoleTable::lookup()'s hard error for an "
@@ -174,16 +175,14 @@ int main() {
             const std::vector<KernelControlCodes> kernels = loadControlCodes(ef, *arch);
             t.check("real fixture cubin has at least one \".text.<kernel>\" section", !kernels.empty());
 
-            // IOInfo.sm_75.txt (Phase 0) is now fully curated or placeholder-flagged across every
-            // bucket, but LatencyClass.sm_75.txt (Phase 1) still only auto-fills the arithmetic-
-            // logic/compare-and-branch buckets -- load/store/control-flow/MMA/warp-shuffle are still
-            // almost entirely TODO there (Reports/tasks.md). Every real kernel here ends in a
-            // control-flow opcode (EXIT/RET/BRA), so decode is still expected to hit a
-            // LatencyClassTable miss even though the IOInfo side no longer blocks it. Once that
-            // curation is filled in too, this may start succeeding instead; either outcome is fine
-            // here, since this test's job is only to confirm the real subprocess/desc-hack/
-            // CuInsFeeder/CuInsParser pipeline runs end-to-end without a *different* (i.e. genuine
-            // bug) exception.
+            // Both IOInfo.sm_75.txt (Phase 0) and LatencyClass.sm_75.txt (Phase 1) are now fully
+            // curated or placeholder-flagged across every bucket (Reports/tasks.md), and every
+            // opcode this particular fixture kernel actually uses resolves in both tables, so this
+            // is now expected to fully succeed. The try/catch below is kept anyway (rather than
+            // asserting success outright) so that if a *future* fixture/fixture rebuild introduces
+            // an opcode neither table curates yet, this test degrades to reporting the expected
+            // std::out_of_range instead of failing outright -- only a genuinely different exception
+            // type indicates a real bug.
             try {
                 const auto realDecoded = decodeInstructions(cubinPath, kernels, *arch);
                 bool allAligned = true;
