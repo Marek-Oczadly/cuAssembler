@@ -14,6 +14,7 @@ add_library(CuAsm STATIC
     CuKernelAssembler.cpp
     CuNVInfo.cpp
     CuSMVersion.cpp
+    LatencyClass.cpp
     OperandRole.cpp
     utils/CubinUtils.cpp
 )

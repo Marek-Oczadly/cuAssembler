@@ -99,4 +99,15 @@ std::string Config::getDefaultIOInfoFile(int versionNumber) {
     return fpath.string();
 }
 
+std::string Config::getDefaultLatencyClassFile(int versionNumber) {
+    fs::path fdir = moduleDir() / "InsAsmRepos";
+    fs::path fpath = fdir / ("LatencyClass.sm_" + std::to_string(versionNumber) + ".txt");
+
+    if (!fs::is_regular_file(fpath)) {
+        fpath = fdir / "LatencyClass.all.txt";
+    }
+
+    return fpath.string();
+}
+
 } // namespace CuAsm

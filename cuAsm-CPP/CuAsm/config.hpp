@@ -83,6 +83,17 @@ public:
      *         "InsAsmRepos/IOInfo.all.json".
      **/
     static std::string getDefaultIOInfoFile(int versionNumber);
+
+    /**
+     * @brief Gets the path of the default instruction latency/pipe classification file for an SM
+     *        version, falling back to the shared "LatencyClass.all.txt" if no per-version file
+     *        exists. New alongside CuAsm::LatencyClassTable (Reports/tasks.md Phase 1); has no
+     *        equivalent in the original Python project.
+     * @param versionNumber SM version number, e.g. 75 for sm_75.
+     * @return Path to "InsAsmRepos/LatencyClass.sm_<versionNumber>.txt" if it exists, else to
+     *         "InsAsmRepos/LatencyClass.all.txt".
+     **/
+    static std::string getDefaultLatencyClassFile(int versionNumber);
 };
 
 } // namespace CuAsm

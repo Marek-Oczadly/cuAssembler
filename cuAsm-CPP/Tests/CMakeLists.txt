@@ -61,5 +61,9 @@ add_executable(test_OperandRole test_OperandRole.cpp)
 target_link_libraries(test_OperandRole PRIVATE CuAsm)
 add_test(NAME test_OperandRole COMMAND test_OperandRole)
 
+add_executable(test_LatencyClass test_LatencyClass.cpp)
+target_link_libraries(test_LatencyClass PRIVATE CuAsm)
+add_test(NAME test_LatencyClass COMMAND test_LatencyClass)
+
 add_subdirectory(utils)
 add_subdirectory(CheckDisasm)

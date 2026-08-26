@@ -10,12 +10,12 @@ using CuAsm::Config;
 
 /**
  * @brief Exercises CuAsm::Config: the hard-coded default ELF headers (parsed once from a literal
- *        byte sequence, mirroring the python original's approach), and the InsAsmRepos/IOInfo
- *        path-resolution helpers, checked against the actual files shipped under
+ *        byte sequence, mirroring the python original's approach), and the InsAsmRepos/IOInfo/
+ *        LatencyClass path-resolution helpers, checked against the actual files shipped under
  *        CuAsm/InsAsmRepos/ (DefaultInsAsmRepos.sm_{60,61,70,75,80,86}.txt; IOInfo.sm_{75,80,86}.txt
- *        per Reports/tasks.md Phase 0, but no IOInfo.* file for every other version number - this
- *        test only checks version numbers without one, so it still always falls back to
- *        IOInfo.all.json).
+ *        per Reports/tasks.md Phase 0; LatencyClass.sm_{75,80,86}.txt per Phase 1) -- for version
+ *        numbers without a per-version file of a given kind, the corresponding getDefault*File
+ *        falls back to that kind's shared "*.all.*" file instead.
  * @return 0 if every check passed, 1 otherwise.
  **/
 int main() {
@@ -61,13 +61,26 @@ int main() {
             Config::getDefaultInsAsmReposFile(89).ends_with("DefaultInsAsmRepos.sm_89.txt") &&
                 !fs::is_regular_file(Config::getDefaultInsAsmReposFile(89)));
 
-    // ---- getDefaultIOInfoFile: no per-version IOInfo.sm_*.txt files ship, so it always falls
-    //      back to the shared IOInfo.all.json, for every version number ----
+    // ---- getDefaultIOInfoFile: no IOInfo.sm_*.txt file ships for version 61 or 999, so both
+    //      fall back to the shared IOInfo.all.json ----
 
     t.check("getDefaultIOInfoFile falls back to IOInfo.all.json when no per-version file exists "
-            "(true for every version right now, since none ship)",
+            "(true for 61 and 999, which have no IOInfo.sm_*.txt of their own)",
             Config::getDefaultIOInfoFile(61).ends_with("IOInfo.all.json") &&
                 Config::getDefaultIOInfoFile(999).ends_with("IOInfo.all.json"));
+
+    // ---- getDefaultLatencyClassFile: mirrors getDefaultIOInfoFile's fallback behavior, checked
+    //      against the real shipped LatencyClass.sm_75.txt (Reports/tasks.md Phase 1) ----
+
+    const std::string latencyPath = Config::getDefaultLatencyClassFile(75);
+    t.check("getDefaultLatencyClassFile(75) builds the expected filename and points at a file "
+            "that actually exists (LatencyClass.sm_75.txt ships in CuAsm/InsAsmRepos/)",
+            latencyPath.ends_with("LatencyClass.sm_75.txt") && fs::is_regular_file(latencyPath));
+
+    t.check("getDefaultLatencyClassFile falls back to LatencyClass.all.txt when no per-version "
+            "file exists (true for 61 and 999, which have no LatencyClass.sm_*.txt of their own)",
+            Config::getDefaultLatencyClassFile(61).ends_with("LatencyClass.all.txt") &&
+                Config::getDefaultLatencyClassFile(999).ends_with("LatencyClass.all.txt"));
 
     return t.finish("test_config");
 }
