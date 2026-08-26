@@ -147,10 +147,16 @@ int main() {
     badKcc.kernelName = "badKernel";
     badKcc.ctrlCodeList = {ctrl0};
     badKcc.insCodeList = {BigInt(0)};
-    const std::string badSass = makeSass("badKernel", {addr0}, {"EXIT ;"});
+    // B2R_R_P is one of the few remaining IOInfo.sm_75.txt entries still commented out as an
+    // unverified "guess" placeholder (control-flow bucket) rather than a live curated entry --
+    // EXIT itself no longer works for this check since IOInfo.sm_75.txt now curates it (its role
+    // list is simply empty), even though LatencyClass.sm_75.txt still doesn't (control-flow bucket
+    // there is still almost entirely TODO), so decoding EXIT now throws from LatencyClassTable
+    // instead -- still a hard error, just not the one this specific check is about.
+    const std::string badSass = makeSass("badKernel", {addr0}, {"B2R.RESULT RZ, P0 ;"});
     t.checkThrows<std::out_of_range>(
         "decodeInstructionsFromSass() propagates OperandRoleTable::lookup()'s hard error for an "
-        "opcode with no curated IOInfo entry (EXIT, control-flow bucket, still a manual-review TODO)",
+        "opcode with only a commented-out \"guess\" IOInfo placeholder (B2R_R_P, control-flow bucket)",
         [&] { (void)decodeInstructionsFromSass(badSass, {badKcc}, sm75); });
 
     // ---- dumpSassForDecode()/decodeInstructions(): the real cuobjdump-invoking path ----
@@ -168,13 +174,16 @@ int main() {
             const std::vector<KernelControlCodes> kernels = loadControlCodes(ef, *arch);
             t.check("real fixture cubin has at least one \".text.<kernel>\" section", !kernels.empty());
 
-            // Phase 0/1's manual-review buckets (load/store/control-flow/MMA/warp-shuffle) are still
-            // mostly TODO (Reports/tasks.md), so every real kernel here is expected to hit at least
-            // one not-yet-curated opcode (every kernel ends in EXIT/RET/BRA, and none of those are
-            // curated yet -- see the EXIT check above). Once that curation is filled in, this may
-            // start succeeding instead; either outcome is fine here, since this test's job is only
-            // to confirm the real subprocess/desc-hack/CuInsFeeder/CuInsParser pipeline runs
-            // end-to-end without a *different* (i.e. genuine bug) exception.
+            // IOInfo.sm_75.txt (Phase 0) is now fully curated or placeholder-flagged across every
+            // bucket, but LatencyClass.sm_75.txt (Phase 1) still only auto-fills the arithmetic-
+            // logic/compare-and-branch buckets -- load/store/control-flow/MMA/warp-shuffle are still
+            // almost entirely TODO there (Reports/tasks.md). Every real kernel here ends in a
+            // control-flow opcode (EXIT/RET/BRA), so decode is still expected to hit a
+            // LatencyClassTable miss even though the IOInfo side no longer blocks it. Once that
+            // curation is filled in too, this may start succeeding instead; either outcome is fine
+            // here, since this test's job is only to confirm the real subprocess/desc-hack/
+            // CuInsFeeder/CuInsParser pipeline runs end-to-end without a *different* (i.e. genuine
+            // bug) exception.
             try {
                 const auto realDecoded = decodeInstructions(cubinPath, kernels, *arch);
                 bool allAligned = true;

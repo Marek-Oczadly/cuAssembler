@@ -1,11 +1,15 @@
+#include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <vector>
 
+#include "../CuAsm/CuInsParser.hpp"
 #include "../CuAsm/OperandRole.hpp"
 #include "utils/TestUtilsCommon.hpp"
 
 using CuAsm::AccessMode;
+using CuAsm::CuInsParser;
 using CuAsm::OperandKind;
 using CuAsm::OperandRoleTable;
 
@@ -94,6 +98,59 @@ MOV_R_R: R:WRITE R:READ
 
     t.check("getStaticTable() returns the same shared instance across repeated calls",
             &OperandRoleTable::getStaticTable(75) == &OperandRoleTable::getStaticTable(75));
+
+    // ---- Cross-check the hand-curated carry-predicate / L-tag arithmetic-logic entries against
+    //      CuInsParser's actual output, not just the IOInfo file's own internal consistency: a
+    //      wrong token count here would silently misalign every role after it (Reports/tasks.md
+    //      Phase 0's "roles are positional" contract), which the file-only checks above can't
+    //      catch. Real example strings, straight from IOInfo.sm_75.txt's own comments. ----
+
+    CuInsParser parser75("sm_75");
+    const auto checkAligned = [&](const std::string& label, const std::string& asmText) {
+        const auto [insKey, insVals, insModi] = parser75.parse(asmText, 0, CuAsm::BigInt(0));
+        const auto& roles = defaultTable.lookup(insKey, insModi);
+        t.checkEqual(label + " (" + insKey + "): role count matches insVals.size() - 1 (excluding P.Guard)", roles.size(),
+                     insVals.size() - 1);
+        return roles;
+    };
+
+    checkAligned("IADD3 with dual carry-out predicates + const-bank operand", "IADD3 R2, P0, P1, R33, c[0x0][0x0], R2 ;");
+    {
+        const auto& roles = checkAligned("IADD3.X with dual carry-out AND dual carry-in predicates",
+                                          "IADD3.X R31, P3, P4, R0, c[0x0][0x200], RZ, PT, PT ;");
+        t.check("IADD3.X dual carry-out/in: dest+carry-outs WRITE, sources+carry-ins READ",
+                roles.size() == 9 && roles[0].mode == AccessMode::WRITE &&    // R31
+                    roles[1].mode == AccessMode::WRITE &&                    // P3 (carry-out)
+                    roles[2].mode == AccessMode::WRITE &&                    // P4 (carry-out)
+                    roles[3].mode == AccessMode::READ &&                     // R0
+                    roles[4].kind == OperandKind::CBANK_IMME && roles[4].mode == AccessMode::READ &&
+                    roles[5].kind == OperandKind::IMME_ADDR && roles[5].mode == AccessMode::READ &&
+                    roles[6].mode == AccessMode::READ &&  // RZ
+                    roles[7].mode == AccessMode::READ &&  // PT (carry-in)
+                    roles[8].mode == AccessMode::READ);   // PT (carry-in)
+    }
+
+    {
+        const auto& roles = checkAligned("LOP3.LUT with a leading destination predicate", "LOP3.LUT P0, RZ, R6, 0x7fffffff, R5, 0xc8, !PT ;");
+        t.check("LOP3.LUT dest predicate: leading P and R both WRITE, trailing !PT READ",
+                roles.size() == 7 && roles[0].kind == OperandKind::PRED && roles[0].mode == AccessMode::WRITE &&
+                    roles[1].kind == OperandKind::GPR && roles[1].mode == AccessMode::WRITE && roles.back().kind == OperandKind::PRED &&
+                    roles.back().mode == AccessMode::READ);
+    }
+
+    checkAligned("LOP3.LUT without a destination predicate", "LOP3.LUT R4, R4, 0xff, RZ, 0xc0, !PT ;");
+
+    {
+        // R2P's destination is the untagged "PR" predicate-bank token, which CuInsParser tags
+        // with zero insVals/insTags slots (OperandParse's "L" catch-all) -- so unlike every other
+        // curated entry, this one's role list is *shorter* than its comma-separated operand count,
+        // covering only the real source register.
+        const auto& roles = checkAligned("R2P: destination predicate bank has no insVals/insTags slot at all", "R2P PR, R88 ;");
+        t.check("R2P: sole role token is the source register, READ", roles.size() == 1 && roles[0].mode == AccessMode::READ);
+    }
+
+    checkAligned("S2R: special-register name (SR_TID.X) contributes no role token", "S2R R0, SR_TID.X ;");
+    checkAligned("FMNMX with a trailing select-condition predicate (READ, not carry-out)", "FMNMX R9, R9, c[0x0][0x190], PT ;");
 
     return t.finish("test_OperandRole");
 }
