@@ -65,5 +65,13 @@ add_executable(test_LatencyClass test_LatencyClass.cpp)
 target_link_libraries(test_LatencyClass PRIVATE CuAsm)
 add_test(NAME test_LatencyClass COMMAND test_LatencyClass)
 
+# Exercises bin/ccCommon.hpp's Phase 2 decode layer (DecodedInstruction / decodeInstructionsFromSass /
+# decodeInstructions), not just CuAsm/ library code -- links elfio::elfio directly since ccCommon.hpp
+# uses ELFIO::elfio itself (CuAsm already links it PUBLIC, but this makes the dependency explicit,
+# matching test_elfSection/test_nvinfo's precedent).
+add_executable(test_ccCommon test_ccCommon.cpp)
+target_link_libraries(test_ccCommon PRIVATE CuAsm elfio::elfio)
+add_test(NAME test_ccCommon COMMAND test_ccCommon)
+
 add_subdirectory(utils)
 add_subdirectory(CheckDisasm)
