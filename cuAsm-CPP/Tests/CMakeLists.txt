@@ -91,3 +91,4 @@ add_test(NAME test_ccCorrect COMMAND test_ccCorrect)
 
 add_subdirectory(utils)
 add_subdirectory(CheckDisasm)
+add_subdirectory(CheckControlCodes)
