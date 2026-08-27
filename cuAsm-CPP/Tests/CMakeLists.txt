@@ -68,10 +68,26 @@ add_test(NAME test_LatencyClass COMMAND test_LatencyClass)
 # Exercises bin/ccCommon.hpp's Phase 2 decode layer (DecodedInstruction / decodeInstructionsFromSass /
 # decodeInstructions), not just CuAsm/ library code -- links elfio::elfio directly since ccCommon.hpp
 # uses ELFIO::elfio itself (CuAsm already links it PUBLIC, but this makes the dependency explicit,
-# matching test_elfSection/test_nvinfo's precedent).
+# matching test_elfSection/test_nvinfo's precedent). Boost::graph is needed too since ccCommon.hpp's
+# hazard graph (Phase 3) is a boost::adjacency_list, pulled in by the same header.
 add_executable(test_ccCommon test_ccCommon.cpp)
-target_link_libraries(test_ccCommon PRIVATE CuAsm elfio::elfio)
+target_link_libraries(test_ccCommon PRIVATE CuAsm elfio::elfio Boost::graph)
 add_test(NAME test_ccCommon COMMAND test_ccCommon)
+
+# Exercises bin/ccCommon.hpp's Phase 3 hazard graph builder/scoreboard simulator (buildHazardGraph/
+# simulateAndVerify/verifyControlCodes) against hand-built synthetic DecodedInstruction sequences,
+# per Reports/tasks.md Phase 5's "prefer synthetic instruction sequences for hazard/scoreboard-
+# simulator unit tests" guidance -- no cuobjdump/real cubin needed here.
+add_executable(test_ccHazard test_ccHazard.cpp)
+target_link_libraries(test_ccHazard PRIVATE CuAsm elfio::elfio Boost::graph)
+add_test(NAME test_ccHazard COMMAND test_ccHazard)
+
+# Exercises bin/ccCommon.hpp's Phase 4 correction layer (collectBarrierIntervals/assignBarrierSlots/
+# correctControlCodes) against hand-built synthetic DecodedInstruction sequences, same rationale as
+# test_ccHazard.cpp -- no cuobjdump/real cubin needed here.
+add_executable(test_ccCorrect test_ccCorrect.cpp)
+target_link_libraries(test_ccCorrect PRIVATE CuAsm elfio::elfio Boost::graph)
+add_test(NAME test_ccCorrect COMMAND test_ccCorrect)
 
 add_subdirectory(utils)
 add_subdirectory(CheckDisasm)

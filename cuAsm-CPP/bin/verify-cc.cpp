@@ -1,16 +1,18 @@
 // Verify the scoreboard control codes of a cubin's instructions.
 //
-// CURRENT STATUS: this is a thin CLI skeleton. It loads a cubin, detects its architecture,
-// decodes every kernel's control codes via the existing CuSMVersion/CuControlCode machinery,
-// and lists them -- but the actual hazard check (verifyControlCodes(), in ccCommon.hpp) is a
-// placeholder that always reports "not implemented". Real verification needs an operand
-// read/write role table, a latency/pipe table, and a scoreboard-state simulator that don't
-// exist anywhere in this codebase yet; see Reports/control-codes-validation.md for the full
-// scope. A clean run of this tool means "the control codes were decoded", not "they're correct".
+// This loads a cubin, detects its architecture, decodes every kernel's instructions (control
+// codes plus role/latency-annotated operand data, via ccCommon.hpp's decodeInstructions()), and
+// runs real hazard-based verification (ccCommon.hpp's verifyControlCodes(), Reports/tasks.md
+// Phase 3): every RAW/WAW/WAR dependency implied by the decoded instructions is checked against a
+// 6-slot scoreboard simulation of the kernel's *current* control codes. See
+// verifyControlCodes()/simulateAndVerify()'s own docs for the one known limitation this carries
+// (FIXED-latency hazards are checked against a conservative lower bound, not an exact cycle
+// count, since no per-opcode numeric latency table exists in this codebase). Correction
+// (repairing a violation) is not implemented yet -- see correct-cc / Reports/tasks.md Phase 4.
 //
 // SCOPE: Turing (sm_75) and newer only. Older architectures are rejected up front (see
-// ccCommon.hpp's c_MinSupportedSMVersion) since the operand-role/latency data this tool will
-// eventually need is best documented from Turing onward.
+// ccCommon.hpp's c_MinSupportedSMVersion) since the operand-role/latency data this tool needs
+// is best documented from Turing onward.
 //
 // Examples:
 //     verify-cc a.cubin
@@ -24,6 +26,7 @@
 
 #include <cstdint>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -33,6 +36,7 @@
 
 #include "../CuAsm/CuAsmLogger.hpp"
 #include "../CuAsm/CuControlCode.hpp"
+#include "../CuAsm/common.hpp"
 #include "ccCommon.hpp"
 #include "cliCommon.hpp"
 
@@ -47,13 +51,15 @@ std::string toHexString(const T& v) {
 }
 
 /**
- * @brief Loads a cubin, decodes each kernel's control codes, and runs (currently stubbed)
- *        verification against each one, printing a per-instruction listing plus the outcome.
+ * @brief Loads a cubin, decodes each kernel's instructions, and runs real hazard-based
+ *        verification against each one (ccCommon.hpp's verifyControlCodes(), Reports/tasks.md
+ *        Phase 3), printing a per-instruction listing plus the outcome.
  * @param fin Input cubin path.
  * @param kernelFilter If non-empty, restrict output to the kernel with this exact name.
- * @return True if the cubin loaded and its control codes decoded successfully (NOT that
- *         verification passed -- see the printed "NOT IMPLEMENTED" status); false on load
- *         failure, an unsupported SM version, or an unmatched --kernel filter.
+ * @return True if the cubin loaded, decoded, and every kernel was checked (NOT that verification
+ *         passed -- a kernel can still print "FAILED", see the per-kernel status line); false on
+ *         load failure, an unsupported SM version, a decode failure (missing cuobjdump, an
+ *         uncurated opcode, ...), or an unmatched --kernel filter.
  **/
 bool verifyCC(const std::string& fin, const std::string& kernelFilter) {
     ELFIO::elfio ef;
@@ -77,6 +83,17 @@ bool verifyCC(const std::string& fin, const std::string& kernelFilter) {
         return false;
     }
 
+    std::map<std::string, std::vector<CuAsm::Tools::DecodedInstruction>> decodedByKernel;
+    try {
+        decodedByKernel = CuAsm::Tools::decodeInstructions(fin, kernels, *arch);
+    } catch (const CuAsm::CalledProcessError& cpe) {
+        CuAsm::CuAsmLogger::logError(std::string("Error when running cuobjdump: ") + cpe.output());
+        return false;
+    } catch (const std::exception& e) {
+        CuAsm::CuAsmLogger::logError(std::string("Failed to decode instructions for hazard verification: ") + e.what());
+        return false;
+    }
+
     bool foundFilterMatch = kernelFilter.empty();
     for (const auto& kcc : kernels) {
         if (!kernelFilter.empty() && kcc.kernelName != kernelFilter) {
@@ -92,8 +109,25 @@ bool verifyCC(const std::string& fin, const std::string& kernelFilter) {
                        << "  code=" << toHexString(kcc.insCodeList[i]) << "\n";
         }
 
-        const CuAsm::Tools::ControlCodeCheckResult result = CuAsm::Tools::verifyControlCodes(kcc, *arch);
-        std::cout << "  Verification: NOT IMPLEMENTED -- " << result.message << "\n\n";
+        const CuAsm::Tools::ControlCodeCheckResult result =
+            CuAsm::Tools::verifyControlCodes(decodedByKernel.at(kcc.kernelName), *arch);
+        switch (result.status) {
+        case CuAsm::Tools::CheckStatus::Verified:
+            std::cout << "  Verification: PASSED -- " << result.message << "\n\n";
+            break;
+        case CuAsm::Tools::CheckStatus::Violated:
+            std::cout << "  Verification: FAILED -- " << result.message << "\n";
+            for (const auto& v : result.violations) {
+                std::cout << "    instruction " << v.consumerIndex << " has an unresolved " << CuAsm::Tools::toString(v.type)
+                           << " hazard from instruction " << v.producerIndex << " on " << CuAsm::Tools::toString(v.regSpace)
+                           << v.regNumber << ": " << v.reason << "\n";
+            }
+            std::cout << "\n";
+            break;
+        case CuAsm::Tools::CheckStatus::NotImplemented:
+            std::cout << "  Verification: NOT IMPLEMENTED -- " << result.message << "\n\n";
+            break;
+        }
     }
 
     if (!foundFilterMatch) {
@@ -116,7 +150,7 @@ bool verifyCC(const std::string& fin, const std::string& kernelFilter) {
  **/
 int main(int argc, char** argv) {
     CLI::App app{"Verify scoreboard control codes of a cubin's instructions "
-                 "(structural decode only for now -- see Reports/control-codes-validation.md)."};
+                 "(RAW/WAW/WAR hazard verification -- see Reports/control-codes-validation.md)."};
 
     std::string infile;
     std::string kernelFilter;

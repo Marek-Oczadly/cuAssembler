@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <map>
@@ -12,6 +14,8 @@
 #include <tuple>
 #include <vector>
 
+#include <boost/graph/adjacency_list.hpp>
+#include <boost/graph/sequential_vertex_coloring.hpp>
 #include <elfio/elfio.hpp>
 
 #include "../CuAsm/CuControlCode.hpp"
@@ -26,11 +30,13 @@
 
 // Shared helpers for the verify-cc/correct-cc control-code tools: loading a cubin's per-kernel
 // control-code/instruction-code lists, decoding those instructions into role/latency-annotated
-// records (decodeInstructions(), Reports/tasks.md Phase 2), and the verification/correction entry
-// points they both call. verifyControlCodes()/correctControlCodes() below are still placeholders
-// -- see Reports/control-codes-validation.md for the scope real hazard-based verification/
-// correction needs on top of decodeInstructions() (a dependency graph and a scoreboard-state
-// simulator, Reports/tasks.md Phase 3, neither of which exist yet).
+// records (decodeInstructions(), Reports/tasks.md Phase 2), building/simulating the resulting
+// RAW/WAW/WAR hazard graph (buildHazardGraph()/simulateAndVerify(), Phase 3), and the
+// verification/correction entry points verify-cc/correct-cc call. Both verifyControlCodes() and
+// correctControlCodes() (Phase 4: barrier-slot interval-coloring allocation, stall-count
+// recomputation, and a reject/rollback path for provably-unrepairable-in-place reorders) are now
+// real implementations -- see Reports/control-codes-validation.md and Reports/tasks.md for the
+// design this was built against.
 
 namespace CuAsm::Tools {
 
@@ -48,15 +54,123 @@ struct KernelControlCodes {
     std::vector<BigInt> insCodeList;
 };
 
+/// Which physical register file a hazard-relevant operand belongs to, grouping OperandKind
+/// values that share a register file: OperandKind::R_ADDR (the register component of a
+/// [Rn+...] memory address) reads the same file as OperandKind::GPR, and OperandKind::UR_ADDR
+/// reads the same file as OperandKind::UGPR -- an address-computation register is a real
+/// register-file read for hazard purposes, it just happens to feed an address unit instead of
+/// an ALU (Reports/tasks.md Phase 3's "address-register operands generate hazards on the
+/// address register itself" scoping note). Non-register OperandKinds (immediates, memory-address
+/// immediate/bank components, barrier/scoreboard/special-register operands) have no RegisterSpace
+/// and are never part of a hazard edge -- see registerSpaceOf().
+enum class RegisterSpace {
+    GPR,
+    UGPR,
+    PRED,
+    UPRED,
+};
+
+/**
+ * @brief Formats a RegisterSpace for diagnostic messages (e.g. verify-cc's violation printout).
+ * @param space Value to format.
+ * @return "GPR", "UGPR", "PRED", or "UPRED".
+ **/
+inline std::string toString(RegisterSpace space) {
+    switch (space) {
+    case RegisterSpace::GPR:
+        return "GPR";
+    case RegisterSpace::UGPR:
+        return "UGPR";
+    case RegisterSpace::PRED:
+        return "PRED";
+    case RegisterSpace::UPRED:
+        return "UPRED";
+    }
+    return "?";
+}
+
+/// The kind of true/output/anti dependency a hazard-graph edge represents, mirroring the
+/// standard compiler-dependence-analysis vocabulary: RAW (read-after-write, a true dependency --
+/// the consumer reads a value the producer wrote), WAW (write-after-write, an output dependency
+/// -- both instructions write the same register, and completion order matters), WAR
+/// (write-after-read, an anti-dependency -- the consumer overwrites a register the producer was
+/// still reading).
+enum class HazardType {
+    RAW,
+    WAW,
+    WAR,
+};
+
+/**
+ * @brief Formats a HazardType for diagnostic messages.
+ * @param type Value to format.
+ * @return "RAW", "WAW", or "WAR".
+ **/
+inline std::string toString(HazardType type) {
+    switch (type) {
+    case HazardType::RAW:
+        return "RAW";
+    case HazardType::WAW:
+        return "WAW";
+    case HazardType::WAR:
+        return "WAR";
+    }
+    return "?";
+}
+
+/// One hazard edge (Reports/tasks.md Phase 3) that the scoreboard simulator found is not
+/// correctly closed by the current control codes: producerIndex's access to the named register
+/// is not guaranteed complete/visible by the time consumerIndex issues, either because a
+/// VARIABLE-latency producer's barrier was never waited on, or because a FIXED-latency producer
+/// immediately precedes its consumer with a zero stall count (see simulateAndVerify()'s doc for
+/// why FIXED-latency checking is a conservative lower bound rather than an exact cycle model --
+/// no per-opcode numeric latency table exists anywhere in this codebase, only the boolean
+/// FIXED/VARIABLE classification LatencyClassTable curates).
+struct HazardViolation {
+    /// Index (within the kernel's instruction list) of the instruction whose register access
+    /// created this hazard.
+    std::size_t producerIndex = 0;
+    /// Index of the instruction whose register access was not correctly guarded against
+    /// producerIndex's.
+    std::size_t consumerIndex = 0;
+    /// RAW/WAW/WAR classification of this hazard.
+    HazardType type = HazardType::RAW;
+    /// Register file the conflicting access is in.
+    RegisterSpace regSpace = RegisterSpace::GPR;
+    /// Register number within regSpace.
+    int regNumber = 0;
+    /// Human-readable explanation of why this edge is considered unresolved.
+    std::string reason;
+};
+
 /// Outcome of a verification or correction pass.
 enum class CheckStatus {
     NotImplemented,
+    /// Every RAW/WAW/WAR hazard edge found in the kernel's instructions is correctly closed by
+    /// its current control codes. verifyControlCodes()-only.
+    Verified,
+    /// At least one hazard edge is not correctly closed -- see ControlCodeCheckResult::violations.
+    /// verifyControlCodes()-only.
+    Violated,
+    /// correctControlCodes() recomputed every control code and every hazard this model can detect
+    /// is now closed -- kcc.ctrlCodeList was rewritten in place. correctControlCodes()-only.
+    Corrected,
+    /// correctControlCodes() could not find a valid assignment of VARIABLE-latency producers to
+    /// the 6 physical scoreboard slots for this instruction order (Reports/tasks.md Phase 4's
+    /// "reorder is provably unrepairable in place" case) -- kcc.ctrlCodeList was left completely
+    /// unchanged. correctControlCodes()-only.
+    Unrepairable,
 };
 
 /// Result of running verifyControlCodes()/correctControlCodes() against one kernel.
 struct ControlCodeCheckResult {
     CheckStatus status = CheckStatus::NotImplemented;
     std::string message;
+    /// Populated (non-empty) when status == CheckStatus::Violated, and in the rare
+    /// CheckStatus::Unrepairable case where correctControlCodes()'s own post-correction
+    /// self-check finds residual violations (an internal modeling bug, not the expected
+    /// barrier-coloring-rejection reason -- see correctControlCodes()'s doc); empty otherwise.
+    std::vector<HazardViolation> violations;
 };
 
 /// Minimum SM version verify-cc/correct-cc support: Turing (sm_75) and newer. Earlier
@@ -141,6 +255,387 @@ struct DecodedInstruction {
     /// Curated latency classification for insKey (LatencyClassTable::lookup()'s result).
     LatencyClassEntry latency;
 };
+
+/// A register operand this instruction actually reads and/or writes, resolved to a concrete
+/// (RegisterSpace, number) pair -- what the Phase 3 hazard graph builder walks per instruction,
+/// built from a DecodedInstruction's roles/insVals plus its (implicit, never role-tabled) guard
+/// predicate. See registerAccessesOf().
+struct RegisterAccess {
+    RegisterSpace space;
+    int number;
+    AccessMode mode;
+};
+
+/// GPR index CuInsParser::constTr() rewrites "RZ" to (CuInsParser.cpp's `rzRe()` substitution):
+/// the architectural zero register. Reading it always yields 0 and writing it is discarded, so it
+/// never carries a real cross-instruction dependency and is excluded from hazard-edge generation.
+inline constexpr int c_GprZeroIndex = 255;
+/// UGPR index "URZ" rewrites to -- URZ's uniform-datapath equivalent of c_GprZeroIndex.
+inline constexpr int c_UgprZeroIndex = 63;
+/// PRED/UPRED index "PT"/"UPT" rewrite to, and also the sentinel CuInsParser::parsePred() returns
+/// for an omitted guard predicate (Reports/tasks.md gotcha: PRED_VAL_IDX's "7 = unconditional").
+/// The always-true constant predicate wire, not a real predicate register -- excluded from hazard
+/// edges the same way c_GprZeroIndex/c_UgprZeroIndex are. A negated guard ("@!P0") is encoded as
+/// (register + 8) by parsePred(); masking with 0x7 before comparing against this sentinel recovers
+/// the real register number regardless of negation (see registerAccessesOf()'s guard-predicate
+/// handling), and "@!PT" (value 15, "never execute") masks down to this same sentinel too -- it is
+/// a constant-false guard, not a real register dependency either.
+inline constexpr int c_PredTrueIndex = 7;
+
+/**
+ * @brief Maps an OperandKind to the physical register file it reads/writes, for OperandKinds that
+ *        participate in hazard-edge generation at all.
+ * @param kind Operand kind to classify.
+ * @return The RegisterSpace kind shares a register file with (R_ADDR groups with GPR, UR_ADDR
+ *         groups with UGPR -- Reports/tasks.md Phase 3's "address-register operands generate
+ *         hazards on the address register itself" scoping decision), or std::nullopt for every
+ *         other OperandKind (immediates, memory-address immediate/bank components, barrier/
+ *         scoreboard/special-register operands -- none of these are general-purpose/uniform/
+ *         predicate register-file accesses, so none of them can alias a GPR/UR/PRED/UPRED
+ *         producer's write; deliberately out of scope, see Phase 3's checklist).
+ **/
+inline std::optional<RegisterSpace> registerSpaceOf(OperandKind kind) {
+    switch (kind) {
+    case OperandKind::GPR:
+    case OperandKind::R_ADDR:
+        return RegisterSpace::GPR;
+    case OperandKind::UGPR:
+    case OperandKind::UR_ADDR:
+        return RegisterSpace::UGPR;
+    case OperandKind::PRED:
+        return RegisterSpace::PRED;
+    case OperandKind::UPRED:
+        return RegisterSpace::UPRED;
+    default:
+        return std::nullopt;
+    }
+}
+
+/**
+ * @brief Checks whether (space, number) names an architectural sentinel register (RZ/URZ/PT/UPT)
+ *        rather than a real, stateful register -- see c_GprZeroIndex/c_UgprZeroIndex/c_PredTrueIndex.
+ * @param space Register file to check within.
+ * @param number Register number within space.
+ * @return True if this is a sentinel that never carries a real cross-instruction dependency.
+ **/
+inline bool isSentinelRegister(RegisterSpace space, int number) {
+    switch (space) {
+    case RegisterSpace::GPR:
+        return number == c_GprZeroIndex;
+    case RegisterSpace::UGPR:
+        return number == c_UgprZeroIndex;
+    case RegisterSpace::PRED:
+    case RegisterSpace::UPRED:
+        return number == c_PredTrueIndex;
+    }
+    return false;
+}
+
+/**
+ * @brief Resolves one decoded instruction's real register-file accesses: its curated per-operand
+ *        roles (OperandRoleTable, restricted to register-class OperandKinds via
+ *        registerSpaceOf()) plus its guard predicate, which OperandRoleTable deliberately never
+ *        tables (every instruction carries it implicitly -- OperandRole.hpp's OperandKind doc) but
+ *        which is a completely ordinary READ dependency for hazard purposes: `@P1 IADD3 ...`
+ *        genuinely must wait for whatever last wrote P1. Sentinel registers (RZ/URZ/PT/UPT) are
+ *        dropped -- they never carry a real dependency (see isSentinelRegister()). Duplicate
+ *        accesses to the same register within one instruction (e.g. `IADD3 R4, R4, R4, RZ`, or a
+ *        role list with a READ and a WRITE role on the same register number) are merged into one
+ *        AccessMode::READ_WRITE entry so buildHazardGraph() adds exactly one edge per real
+ *        register, not one per occurrence.
+ * @param ins Instruction to resolve accesses for.
+ * @return This instruction's real register-file accesses, one per distinct (space, number).
+ **/
+inline std::vector<RegisterAccess> registerAccessesOf(const DecodedInstruction& ins) {
+    std::map<std::pair<RegisterSpace, int>, AccessMode> merged;
+
+    // Guard predicate: same register file as the instruction's own datapath (uniform-datapath
+    // opcodes, i.e. those spelled "U..." -- CuInsParser::parsePred()'s own rule for the
+    // no-explicit-guard case, mirrored here since an explicit "@UP0"/"@P0" guard's parsed value
+    // carries no space tag of its own to read back -- guard with UP, everything else with P).
+    const std::string opcode = ins.insKey.substr(0, ins.insKey.find('_'));
+    const RegisterSpace guardSpace = (!opcode.empty() && opcode.front() == 'U') ? RegisterSpace::UPRED : RegisterSpace::PRED;
+    const int guardReg = static_cast<int>(ins.insVals[CuInsParser::PRED_VAL_IDX]) & 0x7;
+    if (!isSentinelRegister(guardSpace, guardReg)) {
+        merged.emplace(std::make_pair(guardSpace, guardReg), AccessMode::READ);
+    }
+
+    for (std::size_t k = 0; k < ins.roles.size(); ++k) {
+        const std::optional<RegisterSpace> space = registerSpaceOf(ins.roles[k].kind);
+        if (!space.has_value()) {
+            continue;
+        }
+        const int regNum = static_cast<int>(ins.insVals[CuInsParser::OPERAND_VAL_IDX + k]);
+        if (isSentinelRegister(*space, regNum)) {
+            continue;
+        }
+
+        const auto key = std::make_pair(*space, regNum);
+        const auto [it, inserted] = merged.try_emplace(key, ins.roles[k].mode);
+        if (!inserted && it->second != ins.roles[k].mode) {
+            it->second = AccessMode::READ_WRITE;
+        }
+    }
+
+    std::vector<RegisterAccess> result;
+    result.reserve(merged.size());
+    for (const auto& [key, mode] : merged) {
+        result.push_back(RegisterAccess{key.first, key.second, mode});
+    }
+    return result;
+}
+
+/// Per-edge annotation for HazardGraph: which register the edge's hazard is about, and its
+/// RAW/WAW/WAR classification.
+struct HazardEdgeProperties {
+    HazardType type = HazardType::RAW;
+    RegisterSpace regSpace = RegisterSpace::GPR;
+    int regNumber = 0;
+};
+
+/// Directed hazard graph over one kernel's instructions: vertex i is instruction i (0-based index
+/// into the DecodedInstruction vector buildHazardGraph() was built from), and an edge p->c means
+/// instruction p's register access must be visible/complete before instruction c's -- exactly the
+/// RAW/WAW/WAR dependency simulateAndVerify() checks is correctly closed by the current control
+/// codes. Built with Boost.Graph per CLAUDE.md's steer toward it for this exact dependency-graph
+/// problem (see test_nvinfo.cpp for this codebase's existing adjacency_list usage precedent) --
+/// vecS/vecS vertex/edge storage since vertices are already a dense 0..N-1 index space (no name
+/// map needed, unlike test_nvinfo's string-keyed graph). bidirectionalS, not plain directedS:
+/// simulateAndVerify() walks in_edges() per consumer, which plain directedS's adjacency_list
+/// specialization does not provide (no reverse-edge bookkeeping) -- bidirectionalS adds it.
+using HazardGraph = boost::adjacency_list<boost::vecS, boost::vecS, boost::bidirectionalS, boost::no_property, HazardEdgeProperties>;
+
+/**
+ * @brief Builds the RAW/WAW/WAR hazard graph for one kernel's decoded instructions: a standard
+ *        def-use-chain walk (as used for compiler dependence analysis/instruction scheduling
+ *        legality, not a naive O(n^2) all-pairs scan) over each register's access history --
+ *        every register's dependencies are fully captured by an edge from its most recent writer
+ *        to each subsequent accessor (RAW into the next reader, WAW into the next writer) and an
+ *        edge from every reader since that writer into the next writer (WAR); older writers'
+ *        hazards are already transitively subsumed by the most recent writer's, so they need no
+ *        edge of their own.
+ * @param instrs Kernel's decoded instructions, in program order.
+ * @return The hazard graph: instrs.size() vertices (vertex i == instrs[i]), one edge per real
+ *         RAW/WAW/WAR dependency found.
+ **/
+inline HazardGraph buildHazardGraph(const std::vector<DecodedInstruction>& instrs) {
+    HazardGraph graph(instrs.size());
+
+    struct RegHistory {
+        std::optional<std::size_t> lastWriter;
+        std::vector<std::size_t> readersSinceWrite;
+    };
+    std::map<std::pair<RegisterSpace, int>, RegHistory> history;
+
+    for (std::size_t i = 0; i < instrs.size(); ++i) {
+        const std::vector<RegisterAccess> accesses = registerAccessesOf(instrs[i]);
+
+        // Pass 1 (reads, including the read half of a READ_WRITE access): RAW edge from the
+        // register's current writer, if any, then record i as a reader of it.
+        for (const RegisterAccess& acc : accesses) {
+            if (acc.mode == AccessMode::WRITE) {
+                continue;
+            }
+            RegHistory& h = history[std::make_pair(acc.space, acc.number)];
+            if (h.lastWriter.has_value() && *h.lastWriter != i) {
+                boost::add_edge(*h.lastWriter, i, HazardEdgeProperties{HazardType::RAW, acc.space, acc.number}, graph);
+            }
+            h.readersSinceWrite.push_back(i);
+        }
+
+        // Pass 2 (writes, including the write half of a READ_WRITE access): WAW edge from the
+        // register's current writer, WAR edge from every reader recorded since that writer (i's
+        // own read of the same register, just recorded above, is excluded -- reading your own
+        // about-to-be-overwritten operand within one instruction is not a real anti-dependency),
+        // then this instruction becomes the register's new writer with no readers yet.
+        for (const RegisterAccess& acc : accesses) {
+            if (acc.mode == AccessMode::READ) {
+                continue;
+            }
+            RegHistory& h = history[std::make_pair(acc.space, acc.number)];
+            if (h.lastWriter.has_value() && *h.lastWriter != i) {
+                boost::add_edge(*h.lastWriter, i, HazardEdgeProperties{HazardType::WAW, acc.space, acc.number}, graph);
+            }
+            for (const std::size_t reader : h.readersSinceWrite) {
+                if (reader != i) {
+                    boost::add_edge(reader, i, HazardEdgeProperties{HazardType::WAR, acc.space, acc.number}, graph);
+                }
+            }
+            h.lastWriter = i;
+            h.readersSinceWrite.clear();
+        }
+    }
+
+    return graph;
+}
+
+/// Number of physical scoreboard slots on Turing/Ampere (Reports/tasks.md gotcha 4: waitbar is a
+/// 6-bit mask, one bit per slot, and getReadSB()/getWriteSB() range over the same 6 ids). Not
+/// currently exposed as a queryable CuSMVersion constant (see Reports/tasks.md's Phase 3
+/// reference notes) and, per the report's own scope, not expected to differ across this tool's
+/// Turing/Ampere target range -- revisit if a later architecture changes physical slot capacity.
+inline constexpr int c_ScoreboardSlotCount = 6;
+
+/**
+ * @brief Simulates the 6-slot scoreboard over one kernel's instructions in program order and
+ *        checks every hazard-graph edge against it, i.e. the actual verification check (Reports/
+ *        tasks.md Phase 3's checklist items 3-4). At each instruction i: first, every barrier id
+ *        in i's own wait mask (CuControlCode::getBarrierSet()) retires every VARIABLE-latency
+ *        producer currently pending on that slot -- their async ops are now guaranteed complete,
+ *        matching real hardware (an instruction never issues until its own waits are satisfied).
+ *        Then, every hazard edge incoming to i is checked against that now-updated state: a
+ *        VARIABLE-latency producer's edge is closed iff it has been retired (by i's own wait, or
+ *        by any earlier instruction's); a FIXED-latency producer's edge is closed unless i is the
+ *        very next instruction after it with a zero stall count (see below for why this, and not
+ *        an exact cycle count, is what gets checked). Finally, if i is itself a VARIABLE-latency
+ *        producer, it joins the pending queue of whichever scoreboard slot its own control code
+ *        names (getReadSB()/getWriteSB(), per LatencyClassEntry::barrier).
+ *
+ *        Same-slot reuse before a wait is a FIFO queue, not last-writer-wins (confirmed
+ *        empirically against the real TestData/CuTest/cudatest.7.sm_75.cubin fixture -- see
+ *        Reports/tasks.md's Phase 3 notes): real, working compiler output routinely assigns the
+ *        *same* barrier id to several VARIABLE producers back-to-back with no wait between them
+ *        (e.g. two consecutive `S2R ..., W0` reads of different special registers), then closes
+ *        all of them with a single later wait on that one id. This is only sound because ops
+ *        sharing one physical scoreboard slot retire in the order they were issued -- so waiting
+ *        on the slot's *current* occupant transitively guarantees every earlier, still-pending
+ *        occupant of the same slot is also done. An earlier version of this function modeled slot
+ *        ownership as a single scalar (last claimant wins, "displacing" any earlier one, which can
+ *        never retire again) -- correct for the *closing* half, but wrong here: it produced
+ *        false-positive violations on exactly this real, working pattern. Modeled here as one
+ *        pending-producer queue per slot: claiming a slot appends to it; waiting on a slot retires
+ *        every producer currently in it (not just the most recent) and empties it.
+ *
+ *        Per-edge barrier relevance (confirmed empirically against the real
+ *        TestData/CuTest/cudatest.7.sm_75.cubin fixture -- see Reports/tasks.md's Phase 3 notes):
+ *        a VARIABLE producer's barrier protects only the *specific* access LatencyClassEntry::barrier
+ *        names -- BarrierType::WRITE protects its destination write (so it's relevant to RAW/WAW
+ *        edges, where the producer's role was a write), BarrierType::READ protects its still-in-
+ *        flight source read (relevant to WAR edges, where the producer's role was a read). A
+ *        producer's *other* access, if it has one, is synchronous/immediate regardless of the
+ *        instruction's own VARIABLE classification -- e.g. `LDG.E.SYS R5, [R4]` is VARIABLE:WRITE
+ *        (protects the async-written R5), but its address-register read of R4 is resolved at issue
+ *        time like any ALU operand read, so a WAR hazard on R4 (some later instruction overwriting
+ *        it) is checked via the same FIXED-latency rule as an ordinary producer, not via R5's write
+ *        barrier -- confirmed directly: the fixture's real, correctly-scheduled control codes never
+ *        protect an address-register WAR hazard with a wait, only genuine destination-write RAW/WAW
+ *        hazards. Treating every edge from a VARIABLE producer as barrier-protected (an earlier,
+ *        incorrect version of this function) produced false-positive violations on this real,
+ *        working fixture for exactly this reason.
+ *
+ *        A VARIABLE classification is per-*opcode*; whether a given *instance* needs a barrier can
+ *        still be a per-instance compiler choice (Reports/tasks.md Phase 1.1 already documents
+ *        this for LDG/LDC/LDL, and it recurs here: a real, working sm_75 `LDS.U R6, [R6.X4] ;`
+ *        instance -- LDS_R_ARI, curated VARIABLE:WRITE -- sets no write barrier at all, presumably
+ *        because shared memory's latency is small/bounded enough that ptxas judged plain
+ *        instruction spacing sufficient this time). So barrierProtectsThisAccess also requires the
+ *        producer's control code to have *actually* opened the relevant barrier field
+ *        (getReadSB()/getWriteSB() != -1) -- an instance that didn't is treated as FIXED-like for
+ *        that access, falling through to the same conservative adjacency check below, rather than
+ *        being assumed permanently unretirable.
+ *
+ *        FIXED-latency limitation (confirmed with the user before implementing, not decided
+ *        unilaterally -- see Reports/tasks.md): no per-opcode numeric cycle-latency table exists
+ *        anywhere in this codebase (LatencyClassTable, Phase 1, only curates the boolean
+ *        FIXED/VARIABLE classification), so the exact number of stall cycles a FIXED-latency
+ *        dependency needs cannot be computed. The check implemented here is a conservative lower
+ *        bound: it only catches the unconditionally-wrong case (a true dependency made adjacent
+ *        with zero stall between producer and consumer), and treats every other FIXED-latency (or
+ *        FIXED-for-this-specific-access, per the paragraph above) edge as satisfied. A reorder that
+ *        closes the distance to, say, 1 cycle when 2 were actually required would not be caught.
+ *        Revisit this once a real per-opcode latency table exists (see Reports/tasks.md Phase 4's
+ *        own stall-recomputation notes, which assume one).
+ * @param instrs Kernel's decoded instructions, in program order -- must be the same vector (or an
+ *        identically-ordered copy) buildHazardGraph() built graph from.
+ * @param graph Hazard graph for instrs, as returned by buildHazardGraph(instrs).
+ * @return Every hazard edge found not to be correctly closed; empty if the control codes correctly
+ *         close every hazard this model can check.
+ **/
+inline std::vector<HazardViolation> simulateAndVerify(const std::vector<DecodedInstruction>& instrs, const HazardGraph& graph) {
+    std::vector<HazardViolation> violations;
+
+    std::array<std::vector<std::size_t>, c_ScoreboardSlotCount> slotPending{};
+    std::vector<bool> retired(instrs.size(), false);
+
+    for (std::size_t i = 0; i < instrs.size(); ++i) {
+        // Step 1: this instruction's own wait mask retires *every* producer currently pending on
+        // each named slot (not just the most recent -- see this function's doc for why same-slot
+        // reuse before a wait is a FIFO queue, not last-writer-wins), since their async ops are
+        // guaranteed complete before i's own reads/writes happen.
+        for (const int slot : instrs[i].ctrlCode.getBarrierSet()) {
+            if (slot < 0 || slot >= c_ScoreboardSlotCount) {
+                continue;
+            }
+            std::vector<std::size_t>& pending = slotPending[static_cast<std::size_t>(slot)];
+            for (const std::size_t producer : pending) {
+                retired[producer] = true;
+            }
+            pending.clear();
+        }
+
+        // Step 2: check every hazard edge incoming to i against the state as of just before i
+        // issues (i.e. including i's own wait, applied above, but nothing i itself opens below).
+        const auto [inBegin, inEnd] = boost::in_edges(i, graph);
+        for (auto ei = inBegin; ei != inEnd; ++ei) {
+            const std::size_t producer = boost::source(*ei, graph);
+            const HazardEdgeProperties& props = graph[*ei];
+            const LatencyClassEntry& producerLatency = instrs[producer].latency;
+
+            // Which of the producer's accesses this specific edge is about: RAW/WAW edges exist
+            // because the producer *wrote* the register; WAR edges exist because it *read* it.
+            const BarrierType relevantAccess = (props.type == HazardType::WAR) ? BarrierType::READ : BarrierType::WRITE;
+            // A LatencyClassEntry's barrier type is a per-*opcode* classification, but Reports/
+            // tasks.md Phase 1.1 already documents (LDG/LDC/LDL/LDS among others) that whether a
+            // given *instance* actually needs a barrier is sometimes a per-instance compiler
+            // scheduling choice, not a fixed property of the opcode -- confirmed again here
+            // empirically (a real, working sm_75 LDS.U instance sets no barrier at all). So this
+            // producer's barrier only protects the edge if it actually opened one for the
+            // relevant access this time; if the control code shows the corresponding field unset,
+            // that specific instance is behaving like a FIXED producer for this access, and falls
+            // through to the same conservative FIXED-adjacency check below.
+            const bool producerActuallyOpensBarrier = (relevantAccess == BarrierType::WRITE)
+                                                           ? instrs[producer].ctrlCode.getWriteSB() != -1
+                                                           : instrs[producer].ctrlCode.getReadSB() != -1;
+            const bool barrierProtectsThisAccess = producerLatency.kind == LatencyKind::VARIABLE &&
+                                                    *producerLatency.barrier == relevantAccess && producerActuallyOpensBarrier;
+
+            bool closed = true;
+            std::string reason;
+            if (barrierProtectsThisAccess) {
+                closed = retired[producer];
+                if (!closed) {
+                    reason = "producer's " + toString(*producerLatency.barrier) +
+                             " scoreboard barrier was never waited on before this consumer issued";
+                }
+            } else {
+                const bool adjacent = (i == producer + 1);
+                const bool zeroStall = instrs[producer].ctrlCode.getStallCount() == 0;
+                closed = !(adjacent && zeroStall);
+                if (!closed) {
+                    reason = "producer's relevant access to this register is not scoreboard-barrier-protected "
+                             "(either FIXED latency, or a VARIABLE op whose barrier protects its other access) "
+                             "and it immediately precedes this consumer with a stall count of 0";
+                }
+            }
+
+            if (!closed) {
+                violations.push_back(HazardViolation{producer, i, props.type, props.regSpace, props.regNumber, reason});
+            }
+        }
+
+        // Step 3: if i is itself a VARIABLE-latency producer, it joins the pending queue of the
+        // slot its control code names (appending, not replacing -- see this function's doc).
+        if (instrs[i].latency.kind == LatencyKind::VARIABLE) {
+            const int slot =
+                (*instrs[i].latency.barrier == BarrierType::WRITE) ? instrs[i].ctrlCode.getWriteSB() : instrs[i].ctrlCode.getReadSB();
+            if (slot >= 0 && slot < c_ScoreboardSlotCount) {
+                slotPending[static_cast<std::size_t>(slot)].push_back(i);
+            }
+        }
+    }
+
+    return violations;
+}
 
 /**
  * @brief Runs `cuobjdump -sass` on a cubin file, applying the SM8x+ cache-policy desc-bit hack
@@ -297,41 +792,324 @@ decodeInstructions(const std::string& cubinPath, const std::vector<KernelControl
 }
 
 /**
- * @brief Placeholder for hazard-based control-code verification (checking that every RAW/WAW/
- *        WAR dependency is still correctly guarded after a reorder). NOT YET IMPLEMENTED: doing
- *        this for real needs an operand read/write role table, a latency/pipe classification
- *        table, and a scoreboard-state simulator, none of which exist in this codebase yet --
- *        see Reports/control-codes-validation.md (sections 2 and 6, "Phase 0-2"). This stub
- *        makes no claim about hazard correctness; it only confirms the control codes decoded.
- * @param kcc Kernel's decoded control-code/instruction-code lists to check.
- * @param arch Kernel's architecture (unused for now; needed for scoreboard-slot capacity later).
- * @return Always CheckStatus::NotImplemented, with an explanatory message.
+ * @brief Runs real hazard-based control-code verification (Reports/tasks.md Phase 3): builds the
+ *        RAW/WAW/WAR hazard graph for a kernel's decoded instructions (buildHazardGraph()) and
+ *        checks every edge against a 6-slot scoreboard simulation of the kernel's *current*
+ *        control codes (simulateAndVerify()) -- i.e. whether every dependency that exists in this
+ *        instruction order is still correctly guarded by the control codes already attached to it.
+ *        See simulateAndVerify()'s doc for the one known limitation this carries (FIXED-latency
+ *        hazards are checked against a conservative lower bound, not an exact cycle count, since
+ *        no per-opcode latency table exists in this codebase).
+ * @param decoded Kernel's instructions, already decoded via decodeInstructions()/
+ *        decodeInstructionsFromSass() -- role/latency-annotated and carrying each instruction's
+ *        current CuControlCode, in program order.
+ * @param arch Kernel's architecture (unused for now: the 6-physical-slot scoreboard model is not
+ *        expected to differ across this tool's Turing/Ampere target range -- see
+ *        c_ScoreboardSlotCount).
+ * @return CheckStatus::Verified with an empty ControlCodeCheckResult::violations if every hazard
+ *         edge is correctly closed; CheckStatus::Violated with the offending edges listed
+ *         otherwise. Never CheckStatus::NotImplemented -- that status remains only for
+ *         correctControlCodes() (Reports/tasks.md Phase 4, not yet implemented).
  **/
-inline ControlCodeCheckResult verifyControlCodes(const KernelControlCodes& kcc, const CuSMVersion& arch) {
-    (void)kcc;
+inline ControlCodeCheckResult verifyControlCodes(const std::vector<DecodedInstruction>& decoded, const CuSMVersion& arch) {
     (void)arch;
-    return ControlCodeCheckResult{
-        CheckStatus::NotImplemented,
-        "Hazard-based verification is not implemented yet (see Reports/control-codes-validation.md)."};
+
+    const HazardGraph graph = buildHazardGraph(decoded);
+    std::vector<HazardViolation> violations = simulateAndVerify(decoded, graph);
+
+    if (violations.empty()) {
+        std::ostringstream oss;
+        oss << "All hazards across " << decoded.size() << " instructions are correctly closed by their current control codes.";
+        return ControlCodeCheckResult{CheckStatus::Verified, oss.str(), {}};
+    }
+
+    std::ostringstream oss;
+    oss << violations.size() << " hazard edge(s) are not correctly closed by the current control codes.";
+    return ControlCodeCheckResult{CheckStatus::Violated, oss.str(), std::move(violations)};
 }
 
 /**
- * @brief Placeholder for hazard-based control-code correction (barrier-id reassignment and
- *        stall-count recomputation after a reorder, without inserting/removing instructions).
- *        NOT YET IMPLEMENTED: currently a no-op that leaves kcc.ctrlCodeList unchanged -- see
- *        Reports/control-codes-validation.md (section 3, "Phase 3") for the barrier-slot
- *        allocation and reject/rollback logic a real implementation needs.
- * @param kcc Kernel's decoded control-code/instruction-code lists; ctrlCodeList is left as-is.
- * @param arch Kernel's architecture (unused for now).
- * @return Always CheckStatus::NotImplemented, with an explanatory message.
+ * @brief Which of a VARIABLE-latency producer's accesses (BarrierType::WRITE or
+ *        BarrierType::READ) a hazard edge is about, mirroring simulateAndVerify()'s own
+ *        "relevantAccess" rule exactly: RAW/WAW edges exist because the producer *wrote* the
+ *        register, WAR edges exist because it *read* it.
+ * @param type The hazard edge's RAW/WAW/WAR classification.
+ * @return BarrierType::READ for a WAR edge, BarrierType::WRITE otherwise.
  **/
-inline ControlCodeCheckResult correctControlCodes(KernelControlCodes& kcc, const CuSMVersion& arch) {
-    (void)kcc;
+inline BarrierType relevantAccessOf(HazardType type) {
+    return (type == HazardType::WAR) ? BarrierType::READ : BarrierType::WRITE;
+}
+
+/**
+ * @brief Checks whether a producer's curated latency classification can protect a hazard edge
+ *        whose relevantAccessOf() is as given -- the same "does this producer's barrier apply to
+ *        this specific edge" test simulateAndVerify() applies when checking *existing* control
+ *        codes (see its own doc: a VARIABLE producer's barrier only protects the specific access
+ *        LatencyClassEntry::barrier names, its *other* access -- if it has one -- falls through to
+ *        the FIXED-style adjacency rule), reused here (Phase 4) unchanged to decide which edges
+ *        correction should close with a scoreboard wait versus a stall count.
+ * @param producerLatency The producer instruction's curated LatencyClassEntry.
+ * @param relevantAccess Which access the edge is about (relevantAccessOf(edge.type)).
+ * @return True if producerLatency is LatencyKind::VARIABLE and its barrier matches relevantAccess.
+ **/
+inline bool isBarrierEligible(const LatencyClassEntry& producerLatency, BarrierType relevantAccess) {
+    return producerLatency.kind == LatencyKind::VARIABLE && producerLatency.barrier.has_value() &&
+           *producerLatency.barrier == relevantAccess;
+}
+
+/// One VARIABLE-latency producer's scoreboard-slot occupancy interval, for barrier-id
+/// interval-coloring (see assignBarrierSlots()): the physical slot claimed when producerIndex
+/// issues must stay reserved for it until firstConsumerIndex, the *earliest* instruction with a
+/// barrier-eligible (isBarrierEligible()) hazard edge from producerIndex in this direction --
+/// every *later* consumer of the same producer/direction is already covered for free once that
+/// instruction's own wait retires producerIndex, since simulateAndVerify()'s per-producer
+/// `retired` flag is permanent once set. So the slot is free for reuse starting at
+/// firstConsumerIndex, not at producerIndex's *last* consumer -- a tighter (and still fully
+/// correct) interval than "open until the last use" would give, which is what makes self-waiting
+/// at only the earliest consumer (rather than every consumer) both sufficient and slot-efficient.
+/// Two BarrierIntervals only need distinct slots if they actually overlap (see
+/// assignBarrierSlots()); touching endpoints (one interval's firstConsumerIndex equal to
+/// another's producerIndex) are fine, since simulateAndVerify() retires a slot's occupants (step
+/// 1) before checking/claiming anything new on it (steps 2-3) within the same instruction.
+struct BarrierInterval {
+    std::size_t producerIndex;
+    std::size_t firstConsumerIndex;
+    BarrierType direction;
+};
+
+/**
+ * @brief Finds every VARIABLE-latency producer in instrs that actually needs a scoreboard barrier
+ *        -- i.e. has at least one outgoing edge in graph that isBarrierEligible() closes for its
+ *        own classification -- and computes its resulting BarrierInterval (Reports/tasks.md Phase
+ *        4's "each barrier's lifetime... is an interval").
+ * @param instrs Kernel's decoded instructions, in program order.
+ * @param graph Hazard graph for instrs, as returned by buildHazardGraph(instrs).
+ * @return One BarrierInterval per producer that needs a barrier, ordered by producerIndex
+ *         ascending -- required by assignBarrierSlots()'s greedy interval-coloring, which is only
+ *         optimal (uses exactly the maximum simultaneous overlap) when intervals are processed in
+ *         increasing start order.
+ **/
+inline std::vector<BarrierInterval> collectBarrierIntervals(const std::vector<DecodedInstruction>& instrs, const HazardGraph& graph) {
+    std::map<std::size_t, BarrierInterval> needs;
+
+    const auto [ei, eend] = boost::edges(graph);
+    for (auto e = ei; e != eend; ++e) {
+        const std::size_t producer = boost::source(*e, graph);
+        const std::size_t consumer = boost::target(*e, graph);
+        const BarrierType relevantAccess = relevantAccessOf(graph[*e].type);
+
+        if (!isBarrierEligible(instrs[producer].latency, relevantAccess)) {
+            continue;
+        }
+
+        const auto [it, inserted] = needs.try_emplace(producer, BarrierInterval{producer, consumer, relevantAccess});
+        if (!inserted) {
+            it->second.firstConsumerIndex = std::min(it->second.firstConsumerIndex, consumer);
+        }
+    }
+
+    std::vector<BarrierInterval> result;
+    result.reserve(needs.size());
+    for (const auto& [producer, interval] : needs) {
+        result.push_back(interval);
+    }
+    return result;
+}
+
+/// Result of assignBarrierSlots(): every needed producer's chosen physical scoreboard slot id.
+struct BarrierAssignment {
+    /// Maps BarrierInterval::producerIndex to its assigned slot id, in [0, slotsUsed).
+    std::map<std::size_t, int> slotOf;
+    /// Number of distinct slot ids actually used (<= c_ScoreboardSlotCount).
+    int slotsUsed = 0;
+};
+
+/**
+ * @brief Assigns each BarrierInterval a physical scoreboard slot id (Reports/tasks.md Phase 4's
+ *        "barrier-id reassignment... as an interval-coloring problem"): builds an undirected
+ *        interference graph over intervals (an edge between two iff they actually overlap -- see
+ *        BarrierInterval's own doc for why touching endpoints don't count) with Boost.Graph, then
+ *        colors it with boost::sequential_vertex_coloring, processing intervals in increasing
+ *        start (producerIndex) order. Greedy coloring in increasing-left-endpoint order is a
+ *        classical *exact* (not merely heuristic) algorithm specifically for interval graphs --
+ *        it always uses exactly the maximum simultaneous overlap ("clique number") of colors, no
+ *        more -- which is what lets this simple approach double as the "is 6 slots enough"
+ *        feasibility check the report calls for, not just a best-effort packing.
+ * @param intervals Barrier-needing producers, as returned by collectBarrierIntervals() (must be
+ *        producerIndex-ascending, which that function already guarantees).
+ * @return A BarrierAssignment mapping every interval's producerIndex to a slot id in
+ *         [0, c_ScoreboardSlotCount), or std::nullopt if the interference graph's chromatic number
+ *         exceeds c_ScoreboardSlotCount -- i.e. more than 6 of these producers are ever
+ *         simultaneously in flight for this instruction order, which cannot be repaired without
+ *         inserting an instruction to close one of them earlier (forbidden by the shuffler's own
+ *         "never insert/remove instructions" constraint). This is the "reorder is provably
+ *         unrepairable in place" case (Reports/tasks.md Phase 4 / report section 3).
+ **/
+inline std::optional<BarrierAssignment> assignBarrierSlots(const std::vector<BarrierInterval>& intervals) {
+    using IntervalGraph = boost::adjacency_list<boost::vecS, boost::vecS, boost::undirectedS>;
+
+    IntervalGraph graph(intervals.size());
+    for (std::size_t i = 0; i < intervals.size(); ++i) {
+        for (std::size_t j = i + 1; j < intervals.size(); ++j) {
+            const std::size_t maxStart = std::max(intervals[i].producerIndex, intervals[j].producerIndex);
+            const std::size_t minEnd = std::min(intervals[i].firstConsumerIndex, intervals[j].firstConsumerIndex);
+            if (maxStart < minEnd) {
+                boost::add_edge(i, j, graph);
+            }
+        }
+    }
+
+    std::vector<int> colorOf(intervals.size());
+    const auto colorMap = boost::make_iterator_property_map(colorOf.begin(), boost::get(boost::vertex_index, graph));
+    const std::size_t numColors = boost::sequential_vertex_coloring(graph, colorMap);
+    if (numColors > static_cast<std::size_t>(c_ScoreboardSlotCount)) {
+        return std::nullopt;
+    }
+
+    BarrierAssignment assignment;
+    assignment.slotsUsed = static_cast<int>(numColors);
+    for (std::size_t i = 0; i < intervals.size(); ++i) {
+        assignment.slotOf.emplace(intervals[i].producerIndex, colorOf[i]);
+    }
+    return assignment;
+}
+
+/// Raw control-code stall field width (CuControlCode::splitCode()'s 4-bit `0x0000f` mask,
+/// Reports/tasks.md gotcha 5) -- the largest stall count a corrected instruction can encode.
+inline constexpr std::uint32_t c_MaxStallCount = 15;
+
+/**
+ * @brief Runs real hazard-based control-code correction (Reports/tasks.md Phase 4): a full
+ *        recompute of every instruction's waitbar/readbar/writebar/stall fields from scratch
+ *        against the kernel's *current* instruction order -- correction never reorders, inserts,
+ *        or removes instructions, only ever rewrites kcc.ctrlCodeList in place -- built directly
+ *        on Phase 3's hazard-graph/scoreboard-simulator model:
+ *          - Every barrier-eligible hazard edge (isBarrierEligible(), the same rule
+ *            simulateAndVerify() itself uses to judge *existing* codes) is closed by assigning its
+ *            producer a scoreboard slot (assignBarrierSlots(), the interval-coloring allocator
+ *            over the 6 physical slots) and setting a wait bit for that slot on the producer's
+ *            *earliest* barrier-eligible consumer only -- sufficient for every later consumer too,
+ *            since simulateAndVerify()'s per-producer `retired` flag is permanent once any wait
+ *            closes it (see BarrierInterval's doc).
+ *          - Every other hazard edge (a FIXED-latency producer, or a VARIABLE producer's *other*
+ *            access -- see simulateAndVerify()'s own doc) is closed the only way this codebase's
+ *            model can: guaranteeing the producer does not immediately precede its consumer with a
+ *            zero stall count, by raising the producer's stall count to at least 1 whenever that
+ *            specific case would otherwise arise. This never *lowers* an existing stall count -- a
+ *            corrected instruction's stall is max(original, required) -- so an already-valid
+ *            kernel's timing margins are left alone unless a real violation needs more.
+ *          - Every instruction's existing yield flag is preserved unchanged (CuControlCode::
+ *            isYield()'s own doc: yield is orthogonal to scoreboard hazard correctness, so
+ *            correction has no basis to touch it).
+ *        If assignBarrierSlots() reports no valid <=6-slot assignment exists, this is the
+ *        "reorder is provably unrepairable in place" case (Reports/tasks.md Phase 4 / report
+ *        section 3): kcc.ctrlCodeList is left completely unchanged and CheckStatus::Unrepairable
+ *        is returned, rather than emitting a still-broken best-effort result. Otherwise, before
+ *        committing anything, the recomputed codes are re-verified from scratch against the same
+ *        hazard graph (simulateAndVerify()) as a self-check -- this should always report zero
+ *        residual violations by construction, but checking rather than assuming catches a bug in
+ *        this function's own model rather than silently shipping a still-broken control code (see
+ *        ControlCodeCheckResult::violations' doc for this rare failure mode).
+ * @param kcc Kernel's control-code/instruction-code lists; ctrlCodeList is fully rewritten in
+ *        place on success (CheckStatus::Corrected) and left completely unchanged otherwise
+ *        (CheckStatus::Unrepairable) -- insCodeList and every list's size are never touched,
+ *        preserving the "never insert/remove instructions" invariant correct-cc.cpp's own
+ *        re-merge-size-check after this call depends on.
+ * @param decoded kcc's instructions, already decoded (decodeInstructions()/
+ *        decodeInstructionsFromSass()) against kcc's *current* ctrlCodeList -- role/latency-
+ *        annotated and index-aligned 1:1 with kcc.ctrlCodeList/insCodeList.
+ * @param arch Kernel's architecture (unused for now, see verifyControlCodes()'s identical note).
+ * @return CheckStatus::Corrected (with kcc.ctrlCodeList rewritten) if every hazard this model can
+ *         detect is now closed; CheckStatus::Unrepairable (with kcc.ctrlCodeList untouched) if no
+ *         valid <=6-scoreboard-slot assignment exists for this instruction order, or (in the rare
+ *         internal-self-check-failure case) if the recomputed codes still don't fully verify.
+ *         Never CheckStatus::NotImplemented/Verified/Violated -- those remain verifyControlCodes()'s.
+ **/
+inline ControlCodeCheckResult correctControlCodes(KernelControlCodes& kcc, const std::vector<DecodedInstruction>& decoded,
+                                                   const CuSMVersion& arch) {
     (void)arch;
-    return ControlCodeCheckResult{
-        CheckStatus::NotImplemented,
-        "Hazard-based correction is not implemented yet (see Reports/control-codes-validation.md); "
-        "control codes were left unchanged."};
+
+    const HazardGraph graph = buildHazardGraph(decoded);
+
+    const std::vector<BarrierInterval> intervals = collectBarrierIntervals(decoded, graph);
+    const std::optional<BarrierAssignment> assignment = assignBarrierSlots(intervals);
+    if (!assignment) {
+        std::ostringstream oss;
+        oss << "Cannot repair in place: " << intervals.size()
+            << " VARIABLE-latency producer(s) need more scoreboard slots than the " << c_ScoreboardSlotCount
+            << " physical slots available for this instruction order; control codes were left unchanged.";
+        return ControlCodeCheckResult{CheckStatus::Unrepairable, oss.str(), {}};
+    }
+
+    // Every barrier-eligible edge is closed by a wait on its producer's assigned slot, placed on
+    // that producer's earliest barrier-eligible consumer (BarrierInterval's own doc).
+    std::vector<std::uint32_t> waitMask(decoded.size(), 0);
+    std::vector<int> writeBarOf(decoded.size(), -1);
+    std::vector<int> readBarOf(decoded.size(), -1);
+    for (const BarrierInterval& interval : intervals) {
+        const int slot = assignment->slotOf.at(interval.producerIndex);
+        waitMask[interval.firstConsumerIndex] |= (1u << slot);
+        (interval.direction == BarrierType::WRITE ? writeBarOf : readBarOf)[interval.producerIndex] = slot;
+    }
+
+    // Every other edge falls back to the FIXED-style conservative rule simulateAndVerify() itself
+    // checks against: only an immediately-adjacent, zero-stall pair is unconditionally wrong, so
+    // that is the only case correction needs to fix here.
+    std::vector<std::uint32_t> requiredStall(decoded.size(), 0);
+    {
+        const auto [ei, eend] = boost::edges(graph);
+        for (auto e = ei; e != eend; ++e) {
+            const std::size_t producer = boost::source(*e, graph);
+            const std::size_t consumer = boost::target(*e, graph);
+            const BarrierType relevantAccess = relevantAccessOf(graph[*e].type);
+            if (isBarrierEligible(decoded[producer].latency, relevantAccess)) {
+                continue;
+            }
+            if (consumer == producer + 1) {
+                requiredStall[producer] = std::max(requiredStall[producer], std::uint32_t{1});
+            }
+        }
+    }
+
+    std::vector<std::uint32_t> newCodes(decoded.size());
+    for (std::size_t i = 0; i < decoded.size(); ++i) {
+        const std::uint32_t waitbar = waitMask[i];
+        const std::uint32_t readbar = (readBarOf[i] >= 0) ? static_cast<std::uint32_t>(readBarOf[i]) : 7u;
+        const std::uint32_t writebar = (writeBarOf[i] >= 0) ? static_cast<std::uint32_t>(writeBarOf[i]) : 7u;
+        const std::uint32_t yieldFlag = decoded[i].ctrlCode.isYield() ? 0u : 1u;
+        const std::uint32_t stall = std::max(decoded[i].ctrlCode.getStallCount(), requiredStall[i]);
+        if (stall > c_MaxStallCount) {
+            // Unreachable today -- requiredStall is always 0 or 1 here, and an already-decoded
+            // stall count can never exceed 15 either (CuControlCode::splitCode()'s own 4-bit
+            // mask) -- but kept as an explicit reject rather than silently truncating/overflowing,
+            // in case this model ever grows a real per-opcode numeric latency table (see
+            // simulateAndVerify()'s own doc on its current FIXED-latency limitation).
+            std::ostringstream oss;
+            oss << "Cannot repair in place: instruction " << i << " would need a stall count of " << stall
+                << ", exceeding the 4-bit (0-" << c_MaxStallCount << ") field width; control codes were left unchanged.";
+            return ControlCodeCheckResult{CheckStatus::Unrepairable, oss.str(), {}};
+        }
+        newCodes[i] = CuControlCode::mergeCode(waitbar, readbar, writebar, yieldFlag, stall);
+    }
+
+    std::vector<DecodedInstruction> corrected = decoded;
+    for (std::size_t i = 0; i < corrected.size(); ++i) {
+        corrected[i].ctrlCode = CuControlCode(newCodes[i]);
+    }
+    const std::vector<HazardViolation> residual = simulateAndVerify(corrected, graph);
+    if (!residual.empty()) {
+        std::ostringstream oss;
+        oss << "Internal error: recomputed control codes still leave " << residual.size()
+            << " hazard edge(s) unresolved; control codes were left unchanged.";
+        return ControlCodeCheckResult{CheckStatus::Unrepairable, oss.str(), residual};
+    }
+
+    kcc.ctrlCodeList = std::move(newCodes);
+
+    std::ostringstream oss;
+    oss << "Recomputed control codes for " << decoded.size() << " instructions (" << assignment->slotsUsed << "/"
+        << c_ScoreboardSlotCount << " scoreboard slots used).";
+    return ControlCodeCheckResult{CheckStatus::Corrected, oss.str(), {}};
 }
 
 } // namespace CuAsm::Tools

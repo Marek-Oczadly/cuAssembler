@@ -1,23 +1,26 @@
 // Correct the scoreboard control codes of a cubin's instructions.
 //
-// CURRENT STATUS: this is a thin CLI skeleton. It loads a cubin, decodes every kernel's control
-// codes, runs correctControlCodes() (ccCommon.hpp) on each one, re-merges the result, and
-// writes a new cubin -- but correctControlCodes() is currently a no-op that leaves every control
-// code unchanged. Real correction needs everything verify-cc's verification does, plus a
-// barrier-slot (6 scoreboards) allocation solver and a reject/rollback path for reorders that
-// can't be repaired without inserting instructions; see Reports/control-codes-validation.md for
-// the full scope. Until that exists, the output cubin's ".text.<kernel>" sections are expected
-// to be byte-identical to the input's -- this tool exercises the real split -> correct(stub) ->
-// merge -> patch-into-file round trip end to end, ready for correctControlCodes() to be filled
-// in without changing anything else.
+// This loads a cubin, decodes every kernel's instructions (control codes plus role/latency-
+// annotated operand data, via ccCommon.hpp's decodeInstructions()), and runs real hazard-based
+// correction (ccCommon.hpp's correctControlCodes(), Reports/tasks.md Phase 4): every RAW/WAW/WAR
+// dependency implied by the decoded instructions is closed by recomputing waitbar/readbar/
+// writebar/stall from scratch -- barrier-id assignment for VARIABLE-latency hazards is an
+// interval-coloring problem over the 6 physical scoreboard slots (assignBarrierSlots()); every
+// other hazard is closed by raising a stall count. If a kernel's instruction order needs more
+// than 6 simultaneously-live scoreboard barriers, that reorder is provably unrepairable without
+// inserting an instruction (forbidden -- the shuffler this tool supports only ever rearranges
+// existing instructions), so that kernel's control codes are left unchanged and no output file is
+// written. See correctControlCodes()'s own doc for the full design and its one known limitation
+// (stall-count correction is a conservative lower bound, not an exact cycle model -- see
+// simulateAndVerify()'s doc, same limitation verify-cc's verification already carries).
 //
 // SCOPE: Turing (sm_75) and newer only. Older architectures are rejected up front (see
-// ccCommon.hpp's c_MinSupportedSMVersion) since the operand-role/latency data this tool will
-// eventually need is best documented from Turing onward.
+// ccCommon.hpp's c_MinSupportedSMVersion) since the operand-role/latency data this tool needs
+// is best documented from Turing onward.
 //
 // Examples:
 //     correct-cc a.cubin
-//         corrects a.cubin's control codes (currently a no-op), writing a.ccubin
+//         corrects a.cubin's control codes, writing a.ccubin
 //
 //     correct-cc a.cubin -o fixed.cubin
 //         same, writing fixed.cubin
@@ -30,6 +33,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -38,6 +42,7 @@
 #include <elfio/elfio.hpp>
 
 #include "../CuAsm/CuAsmLogger.hpp"
+#include "../CuAsm/common.hpp"
 #include "ccCommon.hpp"
 #include "cliCommon.hpp"
 
@@ -59,13 +64,17 @@ std::vector<char> readWholeFile(const std::string& fname) {
 }
 
 /**
- * @brief Loads a cubin, runs (currently stubbed) control-code correction on each kernel, and
- *        writes the result to a new cubin file by patching each kernel's ".text.<kernel>" bytes
- *        in place. Section sizes never change: correction only ever rewrites existing
- *        control-code fields, never adds/removes instructions.
+ * @brief Loads a cubin, decodes every kernel's instructions, runs real hazard-based control-code
+ *        correction on each one (ccCommon.hpp's correctControlCodes(), Reports/tasks.md Phase 4),
+ *        and -- only if every kernel was successfully repaired -- writes the result to a new
+ *        cubin file by patching each kernel's ".text.<kernel>" bytes in place. Section sizes
+ *        never change: correction only ever rewrites existing control-code fields, never adds/
+ *        removes instructions.
  * @param fin Input cubin path.
  * @param fout Output cubin path.
- * @return True on success; false on any load, decode, or re-merge-size-mismatch failure.
+ * @return True on success; false on any load, decode, correction (CheckStatus::Unrepairable), or
+ *         re-merge-size-mismatch failure. On an Unrepairable kernel, no output file is written at
+ *         all, rather than silently writing a cubin that still contains a real hazard.
  **/
 bool correctCC(const std::string& fin, const std::string& fout) {
     ELFIO::elfio ef;
@@ -89,11 +98,39 @@ bool correctCC(const std::string& fin, const std::string& fout) {
         return false;
     }
 
+    std::map<std::string, std::vector<CuAsm::Tools::DecodedInstruction>> decodedByKernel;
+    try {
+        decodedByKernel = CuAsm::Tools::decodeInstructions(fin, kernels, *arch);
+    } catch (const CuAsm::CalledProcessError& cpe) {
+        CuAsm::CuAsmLogger::logError(std::string("Error when running cuobjdump: ") + cpe.output());
+        return false;
+    } catch (const std::exception& e) {
+        CuAsm::CuAsmLogger::logError(std::string("Failed to decode instructions for hazard correction: ") + e.what());
+        return false;
+    }
+
     std::vector<char> outBytes = readWholeFile(fin);
+    bool anyUnrepairable = false;
 
     for (auto& kcc : kernels) {
-        const CuAsm::Tools::ControlCodeCheckResult result = CuAsm::Tools::correctControlCodes(kcc, *arch);
-        CuAsm::CuAsmLogger::logProcedure("Kernel \"" + kcc.kernelName + "\": " + result.message);
+        const CuAsm::Tools::ControlCodeCheckResult result =
+            CuAsm::Tools::correctControlCodes(kcc, decodedByKernel.at(kcc.kernelName), *arch);
+        switch (result.status) {
+        case CuAsm::Tools::CheckStatus::Corrected:
+            CuAsm::CuAsmLogger::logProcedure("Kernel \"" + kcc.kernelName + "\": CORRECTED -- " + result.message);
+            break;
+        case CuAsm::Tools::CheckStatus::Unrepairable:
+            CuAsm::CuAsmLogger::logError("Kernel \"" + kcc.kernelName + "\": UNREPAIRABLE -- " + result.message);
+            anyUnrepairable = true;
+            break;
+        case CuAsm::Tools::CheckStatus::Verified:
+        case CuAsm::Tools::CheckStatus::Violated:
+        case CuAsm::Tools::CheckStatus::NotImplemented:
+            // correctControlCodes() never returns these -- they remain verifyControlCodes()-only,
+            // handled here only so this switch stays exhaustive over the shared CheckStatus enum.
+            CuAsm::CuAsmLogger::logProcedure("Kernel \"" + kcc.kernelName + "\": " + result.message);
+            break;
+        }
 
         const std::vector<std::byte> merged = arch->mergeCtrlCodes(kcc.insCodeList, kcc.ctrlCodeList);
         if (merged.size() != kcc.sectionSize) {
@@ -103,6 +140,12 @@ bool correctCC(const std::string& fin, const std::string& fout) {
             return false;
         }
         std::memcpy(outBytes.data() + kcc.sectionOffset, merged.data(), merged.size());
+    }
+
+    if (anyUnrepairable) {
+        CuAsm::CuAsmLogger::logError("Not writing \"" + fout +
+                                      "\": at least one kernel's control codes could not be repaired in place.");
+        return false;
     }
 
     std::ofstream out(fout, std::ios::binary);
@@ -116,15 +159,15 @@ bool correctCC(const std::string& fin, const std::string& fout) {
 
 /**
  * @brief Entry point for the correct-cc tool: parses arguments, sets up logging, and writes a
- *        corrected (currently unchanged) copy of a cubin's control codes.
+ *        hazard-corrected copy of a cubin's control codes.
  * @param argc Argument count.
  * @param argv Argument vector.
- * @return 0 on success; -1 on any I/O or decode error; CLI11's own exit code on a bad command
- *         line (see CLI11_PARSE).
+ * @return 0 on success; -1 on any I/O, decode, or correction (CheckStatus::Unrepairable) error;
+ *         CLI11's own exit code on a bad command line (see CLI11_PARSE).
  **/
 int main(int argc, char** argv) {
     CLI::App app{"Correct scoreboard control codes of a cubin's instructions "
-                 "(currently a no-op passthrough -- see Reports/control-codes-validation.md)."};
+                 "(RAW/WAW/WAR hazard correction -- see Reports/control-codes-validation.md)."};
 
     std::vector<std::string> infiles;
     std::string outfile;
