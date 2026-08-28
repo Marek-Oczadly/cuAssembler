@@ -249,7 +249,7 @@ VABSDIFF4_R_R_R_R: R:WRITE R:READ R:READ R:READ  # e.g. "VABSDIFF4.U8.ACC R21, R
 
 # ==== Arithmetic/logic InsKeys not auto-filled (complex operand shape -- needs manual review): 0 TODO ====
 
-# ==== Load/memory-read: 48 curated ====
+# ==== Load/memory-read: 51 curated ====
 
 ATOMS_R_AI_R: R:WRITE Imme.Addr:READ R:READ  # e.g. "@!P0 ATOMS.MIN.S32 RZ, [0x5008], R28 ;"
 ATOMS_R_ARI_R: R:WRITE R.Addr:READ Imme.Addr:READ R:READ  # e.g. "@!P1 ATOMS.MAX.S32 RZ, [RZ], R2 ;"
@@ -297,17 +297,16 @@ TLD_R_R_R_UR_II_L: R:WRITE R:READ R:READ UR:READ II:READ  # e.g. "TLD.SCR.LZ R12
 TXD_R_R_R_R_II_II_L: R:WRITE R:READ R:READ R:READ II:READ II:READ  # e.g. "TXD.AOFFI R26, R40, R40, R24, 0x0, 0x58, 2D ;"
 TXD_R_R_R_R_L: R:WRITE R:READ R:READ R:READ  # e.g. "TXD.B.AOFFI R6, R4, R16, R4, 2D ;"
 TXD_R_R_R_R_UR_II_L: R:WRITE R:READ R:READ R:READ UR:READ II:READ  # e.g. "TXD.AOFFI R12, R14, R52, R12, UR4, 0x0, 2D ;"
+ATOMG_P_R_ARI_R: P:WRITE R:WRITE R.Addr:READ Imme.Addr:READ R:READ  # confirmed via TestData/CheckDisasm/AtomicOps: "ATOMG.E.ADD.STRONG.GPU PT, R6, [R2], R9 ;" -- R:WRITE receives the old value (PTX atom.op destination), leading P is the ATOM-family completion/CAS-success flag
+ATOMG_P_R_ARI_R_R: P:WRITE R:WRITE R.Addr:READ Imme.Addr:READ R:READ R:READ  # confirmed via TestData/CheckDisasm/AtomicOps: "ATOMG.E.CAS.STRONG.GPU PT, RZ, [R4], R6, R7 ;" -- CAS form, same reasoning as ATOMG_P_R_ARI_R
+ATOM_P_R_AURI_R: P:WRITE R:WRITE UR.Addr:READ Imme.Addr:READ R:READ  # confirmed via TestData/CheckDisasm/CooperativeGroups: "@P0 ATOM.E.ADD.STRONG.GPU PT, R2, [UR6+0x4], R2 ;" -- same reasoning as ATOMG_P_R_ARI_R
 ULDC_UR_cAI: UR:WRITE Imme.CBank:READ Imme.Addr:READ  # e.g. "ULDC UR5, c[0x0][0x0] ;"
 ULDC_UR_cAURI: UR:WRITE Imme.CBank:READ UR.Addr:READ Imme.Addr:READ  # e.g. "ULDC UR5, c[0x3][UR4+0x4] ;"
 
-# ==== Load/memory-read InsKeys not curated (needs further review / reverse engineering): 13 TODO ====
+# ==== Load/memory-read InsKeys not curated (needs further review / reverse engineering): 10 TODO ====
 
-# TODO ATOMG_P_R_ARI_R  guess: P:WRITE R:WRITE R.Addr:READ Imme.Addr:READ R:READ  -- same reasoning as ATOM's leading P  # e.g. "@P0 ATOMG.E.ADD.STRONG.GPU PT, R3, [R2+0x8], R7 ;"
-# TODO ATOMG_P_R_ARI_R_R  guess: P:WRITE R:WRITE R.Addr:READ Imme.Addr:READ R:READ R:READ  -- CAS form, same reasoning  # e.g. "ATOMG.E.CAS.STRONG.GPU PT, R5, [R2], R4, R5 ;"
-# TODO ATOMG_P_R_AURI_R  guess: P:WRITE R:WRITE UR.Addr:READ Imme.Addr:READ R:READ  -- same reasoning  # e.g. "@P0 ATOMG.E.ADD.STRONG.GPU PT, R4, [UR4], R4 ;"
 # TODO ATOM_P_R_ARI_R  guess: P:WRITE R:WRITE R.Addr:READ Imme.Addr:READ R:READ  -- R:WRITE is well-grounded (PTX atom.op's destination always receives the old value); leading P is absent from ATOMS's shared-mem forms, reasoned as a completion/CAS-success flag by analogy to other ISAs, not confirmed  # e.g. "ATOM.E.ADD.F16x2.RN.STRONG.GPU P0, RZ, [R2], R6 ;"
 # TODO ATOM_P_R_ARI_R_R  guess: P:WRITE R:WRITE R.Addr:READ Imme.Addr:READ R:READ R:READ  -- CAS form, same reasoning as ATOM_P_R_ARI_R  # e.g. "ATOM.E.CAS.STRONG.GPU PT, R0, [R6], R3, R0 ;"
-# TODO ATOM_P_R_AURI_R  guess: P:WRITE R:WRITE UR.Addr:READ Imme.Addr:READ R:READ  -- same reasoning as ATOM_P_R_ARI_R  # e.g. "@P2 ATOM.E.ADD.STRONG.GPU PT, R6, [UR12+0x4], R3 ;"
 # TODO LDG_R_ARI_P  guess: R:WRITE R.Addr:READ Imme.Addr:READ P:WRITE  -- no PTX equivalent found; a live NVIDIA developer-forum thread on this exact question shows even the community is only speculating; leaning WRITE (possible completion/cache-hit flag) but READ is equally plausible  # e.g. "LDG.E.LTC128B.128.CONSTANT.GPU R128, [R144], P3 ;"
 # TODO LDG_R_ARURI_P  guess: R:WRITE R.Addr:READ UR.Addr:READ Imme.Addr:READ P:WRITE  -- same uncertainty as LDG_R_ARI_P  # e.g. "LDG.E.64.SYS R2, [R252.U32+UR12+0x18e0], P1 ;"
 # TODO QSPC_P_R_ARI  guess: P:WRITE R:WRITE R.Addr:READ Imme.Addr:READ  -- P grounded via PTX isspacep's predicate destination; R's role (guessed as a fused address conversion) is unconfirmed  # e.g. "QSPC.E.S P0, RZ, [R2] ;"
@@ -426,7 +425,7 @@ IMMA_R_R_R_R: R:WRITE R:READ R:READ R:READ  # e.g. "IMMA.8816.S8.S8.SAT R2, R68.
 
 # ==== Tensor-core (MMA) InsKeys not curated (needs further review / reverse engineering): 0 TODO ====
 
-# ==== Warp-shuffle/vote/match: 7 curated ====
+# ==== Warp-shuffle/vote/match: 9 curated ====
 
 MATCH_R_R: R:WRITE R:READ  # e.g. "MATCH.ANY R7, R13 ;"
 SHFL_P_R_R_II_II: P:WRITE R:WRITE R:READ II:READ II:READ  # e.g. "SHFL.DOWN P0, R8, R9, 0x1, 0x1e01 ;"
@@ -434,9 +433,8 @@ SHFL_P_R_R_II_R: P:WRITE R:WRITE R:READ II:READ R:READ  # e.g. "SHFL.UP PT, R7, 
 SHFL_P_R_R_R_II: P:WRITE R:WRITE R:READ R:READ II:READ  # e.g. "SHFL.IDX PT, R3, R10, RZ, 0x1f ;"
 SHFL_P_R_R_R_R: P:WRITE R:WRITE R:READ R:READ R:READ  # e.g. "SHFL.DOWN P1, R35, R36, R35, R6 ;"
 VOTEU_UP_P: UP:WRITE P:READ  # e.g. "VOTEU.ANY UP0, P0 ;"
+VOTEU_UR_UP_P: UR:WRITE UP:WRITE P:READ  # confirmed via TestData/CheckDisasm/{Intrinsics,CooperativeGroups}: "VOTEU.ANY UR4, UPT, PT ;" -- uniform-datapath analog of VOTE_R_P_P
 VOTE_P_P: P:WRITE P:READ  # e.g. "VOTE.ANY P0, P0 ;"
+VOTE_R_P_P: R:WRITE P:WRITE P:READ  # confirmed via TestData/CheckDisasm/{Intrinsics,LargeKernel,CooperativeGroups}: "VOTE.ANY R6, PT, PT ;" / "VOTE.ANY R15, PT, P2 ;" -- ballot register + predicate-reduction result fused into one VOTE.ANY, by structural analogy to VOTE_P_P/SHFL's confirmed "extra leading/paired predicate is WRITE" pattern; PTX itself only documents vote.sync.pred and vote.sync.ballot.b32 as separate 2-operand forms, not this fused 3-operand SASS form
 
-# ==== Warp-shuffle/vote/match InsKeys not curated (needs further review / reverse engineering): 2 TODO ====
-
-# TODO VOTEU_UR_UP_P  guess: UR:WRITE UP:WRITE P:READ  -- same reasoning as VOTE_R_P_P, uniform-datapath analog  # e.g. "VOTEU.ALL UR4, UPT, PT ;"
-# TODO VOTE_R_P_P  guess: R:WRITE P:WRITE P:READ  -- PTX only documents vote.sync.pred (2-operand, predicate-only) and vote.sync.ballot.b32 (2-operand, register-only) as separate instructions; this 3-operand SASS form fusing both outputs into one VOTE.ANY (not .BALLOT) is not directly documented anywhere found -- guessed by structural analogy to the confirmed VOTE_P_P/SHFL "extra leading/paired predicate is WRITE" pattern  # e.g. "VOTE.ANY R6, PT, P1 ;"
+# ==== Warp-shuffle/vote/match InsKeys not curated (needs further review / reverse engineering): 0 TODO ====

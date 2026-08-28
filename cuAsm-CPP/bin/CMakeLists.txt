@@ -25,3 +25,18 @@ target_link_libraries(verify-cc PRIVATE CuAsm CLI11::CLI11 elfio::elfio Boost::g
 
 add_executable(correct-cc correct-cc.cpp)
 target_link_libraries(correct-cc PRIVATE CuAsm CLI11::CLI11 elfio::elfio Boost::graph)
+
+# cc-diff-run: generic CUDA Driver-API host launcher for control-code correction differential
+# testing (Reports/tasks.md Phase 5's compute-sanitizer checklist item). Needs the CUDA Driver API
+# (cuda.h / cuda.lib, CUDA::cuda_driver via CMake's CUDAToolkit package -- distinct from the
+# nvcc-as-a-language setup TestData/microbench/{L2Bank,RegBank} use) rather than just the nvcc
+# compiler CheckDisasm's tests already require, so it's independently guarded and skipped (with a
+# message, not a hard error) on a machine that has nvcc but not a full CUDA Toolkit install with
+# the Driver API library.
+find_package(CUDAToolkit QUIET)
+if(CUDAToolkit_FOUND)
+    add_executable(cc-diff-run cc-diff-run.cpp)
+    target_link_libraries(cc-diff-run PRIVATE CLI11::CLI11 CUDA::cuda_driver)
+else()
+    message(STATUS "CUDAToolkit not found; skipping cc-diff-run (bin/cc-diff-run.cpp).")
+endif()

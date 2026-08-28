@@ -414,6 +414,20 @@ using HazardGraph = boost::adjacency_list<boost::vecS, boost::vecS, boost::bidir
  *        edge from every reader since that writer into the next writer (WAR); older writers'
  *        hazards are already transitively subsumed by the most recent writer's, so they need no
  *        edge of their own.
+ *
+ *        KNOWN LIMITATION (found via Tests/CheckControlCodes fixtures, 2026-08-28, deliberately
+ *        not yet fixed -- see Reports/tasks.md Phase 5's dated note for the full writeup and the
+ *        two confirmed repro kernels): this walk treats instrs as one flat program-order sequence
+ *        with no basic-block/control-flow awareness -- it has no notion of branches at all, so it
+ *        links every register access to whatever the *previous* accessor in raw index order was,
+ *        even across a divergent, BSSY/BSYNC-bounded region where multiple mutually-exclusive
+ *        branch legs each access the same register and reconverge at a shared label. That produces
+ *        a spurious edge between two accesses that can never actually execute on the same thread's
+ *        path -- confirmed to cause real false-positive violations (simulateAndVerify() correctly
+ *        finds real, working ptxas control codes don't protect a dependency that isn't real). A
+ *        correct fix needs branch-target decoding + basic-block construction + reachability-aware
+ *        dataflow analysis layered on top of this function, not a change to this function's own
+ *        per-register walk.
  * @param instrs Kernel's decoded instructions, in program order.
  * @return The hazard graph: instrs.size() vertices (vertex i == instrs[i]), one edge per real
  *         RAW/WAW/WAR dependency found.
