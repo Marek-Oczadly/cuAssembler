@@ -43,7 +43,7 @@
 
 #include "../CuAsm/CuAsmLogger.hpp"
 #include "../CuAsm/common.hpp"
-#include "ccCommon.hpp"
+#include "CuAsmTools/CorrectCC.hpp"
 #include "cliCommon.hpp"
 
 namespace fs = std::filesystem;
@@ -51,25 +51,12 @@ namespace fs = std::filesystem;
 namespace {
 
 /**
- * @brief Reads a whole file into memory as raw bytes.
- * @param fname Path to read.
- * @return The file's contents.
- **/
-std::vector<char> readWholeFile(const std::string& fname) {
-    std::ifstream in(fname, std::ios::binary);
-    std::ostringstream ss;
-    ss << in.rdbuf();
-    const std::string s = ss.str();
-    return std::vector<char>(s.begin(), s.end());
-}
-
-/**
  * @brief Loads a cubin, decodes every kernel's instructions, runs real hazard-based control-code
- *        correction on each one (ccCommon.hpp's correctControlCodes(), Reports/tasks.md Phase 4),
- *        and -- only if every kernel was successfully repaired -- writes the result to a new
- *        cubin file by patching each kernel's ".text.<kernel>" bytes in place. Section sizes
- *        never change: correction only ever rewrites existing control-code fields, never adds/
- *        removes instructions.
+ *        correction on each one, and -- only if every kernel was successfully repaired -- writes
+ *        the result to a new cubin file by patching each kernel's ".text.<kernel>" bytes in
+ *        place. Thin CLI wrapper around CuAsmTools/CorrectCC.hpp's correctCubinControlCodes() --
+ *        all the actual load/decode/correct/re-merge/write work now lives there; this function
+ *        only logs its report.
  * @param fin Input cubin path.
  * @param fout Output cubin path.
  * @return True on success; false on any load, decode, correction (CheckStatus::Unrepairable), or
@@ -77,82 +64,44 @@ std::vector<char> readWholeFile(const std::string& fname) {
  *         all, rather than silently writing a cubin that still contains a real hazard.
  **/
 bool correctCC(const std::string& fin, const std::string& fout) {
-    ELFIO::elfio ef;
-    if (!ef.load(fin)) {
-        CuAsm::CuAsmLogger::logError("Failed to load ELF/cubin \"" + fin + "\"!");
-        return false;
-    }
-
-    const auto arch = CuAsm::Tools::detectArch(ef);
-    if (!arch) {
-        CuAsm::CuAsmLogger::logError("Cubin \"" + fin +
-                                      "\" targets an unsupported SM version -- correct-cc requires Turing "
-                                      "(sm_75) or newer!");
-        return false;
-    }
-    CuAsm::CuAsmLogger::logProcedure("Detected " + arch->getVersionString() + ".");
-
-    std::vector<CuAsm::Tools::KernelControlCodes> kernels = CuAsm::Tools::loadControlCodes(ef, *arch);
-    if (kernels.empty()) {
-        CuAsm::CuAsmLogger::logError("No \".text.<kernel>\" sections found in \"" + fin + "\"!");
-        return false;
-    }
-
-    std::map<std::string, std::vector<CuAsm::Tools::DecodedInstruction>> decodedByKernel;
     try {
-        decodedByKernel = CuAsm::Tools::decodeInstructions(fin, kernels, *arch);
+        const CuAsm::Tools::CubinCorrectionReport report = CuAsm::Tools::correctCubinControlCodes(fin, fout);
+
+        CuAsm::CuAsmLogger::logProcedure("Detected " + report.arch.getVersionString() + ".");
+
+        for (const auto& kr : report.kernels) {
+            switch (kr.result.status) {
+            case CuAsm::Tools::CheckStatus::Corrected:
+                CuAsm::CuAsmLogger::logProcedure("Kernel \"" + kr.kernelName + "\": CORRECTED -- " + kr.result.message);
+                break;
+            case CuAsm::Tools::CheckStatus::Unrepairable:
+                CuAsm::CuAsmLogger::logError("Kernel \"" + kr.kernelName + "\": UNREPAIRABLE -- " + kr.result.message);
+                break;
+            case CuAsm::Tools::CheckStatus::Verified:
+            case CuAsm::Tools::CheckStatus::Violated:
+            case CuAsm::Tools::CheckStatus::NotImplemented:
+                // correctControlCodes() never returns these -- they remain verifyControlCodes()-only,
+                // handled here only so this switch stays exhaustive over the shared CheckStatus enum.
+                CuAsm::CuAsmLogger::logProcedure("Kernel \"" + kr.kernelName + "\": " + kr.result.message);
+                break;
+            }
+        }
+
+        if (report.anyUnrepairable) {
+            CuAsm::CuAsmLogger::logError("Not writing \"" + fout +
+                                          "\": at least one kernel's control codes could not be repaired in place.");
+            return false;
+        }
+
+        CuAsm::CuAsmLogger::logProcedure("Wrote corrected cubin to \"" + fout + "\".");
+        return true;
     } catch (const CuAsm::CalledProcessError& cpe) {
         CuAsm::CuAsmLogger::logError(std::string("Error when running cuobjdump: ") + cpe.output());
         return false;
     } catch (const std::exception& e) {
-        CuAsm::CuAsmLogger::logError(std::string("Failed to decode instructions for hazard correction: ") + e.what());
+        CuAsm::CuAsmLogger::logError(e.what());
         return false;
     }
-
-    std::vector<char> outBytes = readWholeFile(fin);
-    bool anyUnrepairable = false;
-
-    for (auto& kcc : kernels) {
-        const CuAsm::Tools::ControlCodeCheckResult result =
-            CuAsm::Tools::correctControlCodes(kcc, decodedByKernel.at(kcc.kernelName), *arch);
-        switch (result.status) {
-        case CuAsm::Tools::CheckStatus::Corrected:
-            CuAsm::CuAsmLogger::logProcedure("Kernel \"" + kcc.kernelName + "\": CORRECTED -- " + result.message);
-            break;
-        case CuAsm::Tools::CheckStatus::Unrepairable:
-            CuAsm::CuAsmLogger::logError("Kernel \"" + kcc.kernelName + "\": UNREPAIRABLE -- " + result.message);
-            anyUnrepairable = true;
-            break;
-        case CuAsm::Tools::CheckStatus::Verified:
-        case CuAsm::Tools::CheckStatus::Violated:
-        case CuAsm::Tools::CheckStatus::NotImplemented:
-            // correctControlCodes() never returns these -- they remain verifyControlCodes()-only,
-            // handled here only so this switch stays exhaustive over the shared CheckStatus enum.
-            CuAsm::CuAsmLogger::logProcedure("Kernel \"" + kcc.kernelName + "\": " + result.message);
-            break;
-        }
-
-        const std::vector<std::byte> merged = arch->mergeCtrlCodes(kcc.insCodeList, kcc.ctrlCodeList);
-        if (merged.size() != kcc.sectionSize) {
-            CuAsm::CuAsmLogger::logError("Re-merged control codes for kernel \"" + kcc.kernelName +
-                                          "\" changed section size (" + std::to_string(kcc.sectionSize) + " -> " +
-                                          std::to_string(merged.size()) + " bytes)!");
-            return false;
-        }
-        std::memcpy(outBytes.data() + kcc.sectionOffset, merged.data(), merged.size());
-    }
-
-    if (anyUnrepairable) {
-        CuAsm::CuAsmLogger::logError("Not writing \"" + fout +
-                                      "\": at least one kernel's control codes could not be repaired in place.");
-        return false;
-    }
-
-    std::ofstream out(fout, std::ios::binary);
-    out.write(outBytes.data(), static_cast<std::streamsize>(outBytes.size()));
-    CuAsm::CuAsmLogger::logProcedure("Wrote corrected cubin to \"" + fout + "\".");
-
-    return true;
 }
 
 } // namespace

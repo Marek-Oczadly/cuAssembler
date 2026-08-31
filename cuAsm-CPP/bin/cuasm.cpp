@@ -33,77 +33,52 @@
 #include <CLI/CLI.hpp>
 
 #include "../CuAsm/CuAsmLogger.hpp"
-#include "../CuAsm/CuAsmParser.hpp"
-#include "../CuAsm/CubinFile.hpp"
+#include "CuAsmTools/Cuasm.hpp"
 #include "cliCommon.hpp"
 
 namespace fs = std::filesystem;
 
 namespace {
 
-enum class Direction {
-    Auto,
-    Bin2Asm,
-    Asm2Bin,
-};
-
 /**
- * @brief Disassembles a cubin file and writes the result as a cuasm file.
- * @param binname Path of the input cubin file.
- * @param asmname Path of the output cuasm file; if not given, defaults to binname with its extension replaced by ".cuasm".
- * @return True on success; false if the output file check failed.
- **/
-bool cubin2cuasm(const std::string& binname, std::optional<std::string> asmname = std::nullopt) {
-    std::string outname = asmname.value_or(fs::path(binname).replace_extension(".cuasm").string());
-
-    CuAsm::CubinFile cf(binname);
-    if (!checkOutFileBackup(outname)) {
-        return false;
-    }
-    cf.saveAsCuAsm(outname);
-    return true;
-}
-
-/**
- * @brief Assembles a cuasm file and writes the result as a cubin file.
- * @param asmname Path of the input cuasm file.
- * @param binname Path of the output cubin file; if not given, defaults to asmname with its extension replaced by ".cubin".
- * @return True on success; false if the output file check failed.
- **/
-bool cuasm2cubin(const std::string& asmname, std::optional<std::string> binname = std::nullopt) {
-    CuAsm::CuAsmParser cap;
-    cap.parse(asmname);
-
-    std::string outname = binname.value_or(fs::path(asmname).replace_extension(".cubin").string());
-
-    if (!checkOutFileBackup(outname)) {
-        return false;
-    }
-    cap.saveAsCubin(outname);
-    return true;
-}
-
-/**
- * @brief Converts src to dst, choosing the cubin<->cuasm direction automatically from the src extension
- *        unless direction explicitly overrides it.
+ * @brief Converts src to dst, choosing the cubin<->cuasm direction automatically from the src
+ *        extension unless direction explicitly overrides it. Thin CLI wrapper around
+ *        CuAsmTools/Cuasm.hpp's convert() -- handles the output-file backup check and prints a
+ *        diagnostic on failure instead of throwing, since that's this CLI's own established
+ *        contract (see cliCommon.hpp's checkOutFileBackup()).
  * @param src Path of the source file (.cubin/.bin or .cuasm/.asm, unless direction is given explicitly).
  * @param dst Optional path of the destination file; inferred from src if not given.
  * @param direction Conversion direction: Auto (infer from extension), Bin2Asm, or Asm2Bin.
- * @return True on success; false if the direction couldn't be inferred or the conversion failed.
+ * @return True on success; false if the output file check failed or the conversion threw.
  **/
-bool doProcess(const std::string& src, const std::optional<std::string>& dst, Direction direction) {
-    std::string fext = fs::path(src).extension().string();
+bool doProcess(const std::string& src, const std::optional<std::string>& dst, CuAsm::Tools::CuasmDirection direction) {
+    const std::string fext = fs::path(src).extension().string();
 
-    if (direction == Direction::Bin2Asm || fext == ".cubin" || fext == ".bin") {
-        return cubin2cuasm(src, dst);
-    } else if (direction == Direction::Asm2Bin || fext == ".cuasm" || fext == ".asm") {
-        return cuasm2cubin(src, dst);
+    bool isBin2Asm;
+    if (direction == CuAsm::Tools::CuasmDirection::Bin2Asm || fext == ".cubin" || fext == ".bin") {
+        isBin2Asm = true;
+    } else if (direction == CuAsm::Tools::CuasmDirection::Asm2Bin || fext == ".cuasm" || fext == ".asm") {
+        isBin2Asm = false;
     } else {
         std::cout << "The first infile should be with ext \".cubin\" or \".cuasm\", "
                      "otherwise specify direction by option --bin2asm or --asm2bin!"
                   << std::endl;
         return false;
     }
+
+    const std::string resolvedOutname = dst.value_or(fs::path(src).replace_extension(isBin2Asm ? ".cuasm" : ".cubin").string());
+
+    if (!checkOutFileBackup(resolvedOutname)) {
+        return false;
+    }
+
+    try {
+        CuAsm::Tools::convert(src, resolvedOutname, direction);
+    } catch (const std::exception& e) {
+        std::cout << e.what() << std::endl;
+        return false;
+    }
+    return true;
 }
 
 } // namespace
@@ -149,11 +124,11 @@ int main(int argc, char** argv) {
         return -1;
     }
 
-    Direction direction = Direction::Auto;
+    CuAsm::Tools::CuasmDirection direction = CuAsm::Tools::CuasmDirection::Auto;
     if (forceBin2Asm) {
-        direction = Direction::Bin2Asm;
+        direction = CuAsm::Tools::CuasmDirection::Bin2Asm;
     } else if (forceAsm2Bin) {
-        direction = Direction::Asm2Bin;
+        direction = CuAsm::Tools::CuasmDirection::Asm2Bin;
     }
 
     int stdoutLevel;

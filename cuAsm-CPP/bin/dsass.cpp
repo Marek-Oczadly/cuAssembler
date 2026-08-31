@@ -42,9 +42,8 @@
 #include <CLI/CLI.hpp>
 
 #include "../CuAsm/CuAsmLogger.hpp"
-#include "../CuAsm/CuInsFeeder.hpp"
 #include "../CuAsm/common.hpp"
-#include "../CuAsm/utils/CubinUtils.hpp"
+#include "CuAsmTools/Dsass.hpp"
 #include "cliCommon.hpp"
 
 namespace fs = std::filesystem;
@@ -52,7 +51,10 @@ namespace fs = std::filesystem;
 namespace {
 
 /**
- * @brief Dumps sass (from a sass/cubin/binary file) annotated with scoreboard control codes.
+ * @brief Dumps sass (from a sass/cubin/binary file) annotated with scoreboard control codes. Thin
+ *        CLI wrapper around CuAsmTools/Dsass.hpp's dumpControlCodeSass() -- handles the output-
+ *        file backup check and logs a diagnostic on failure instead of throwing, since that's this
+ *        CLI's own established contract (see cliCommon.hpp's checkOutFileBackup()).
  * @param fin Input filename: dumped sass (.sass), cubin (.cubin), or any other binary containing a cubin.
  * @param fout Optional output filename; defaults to fin with its extension replaced by ".dsass".
  * @param keepcode Keep code-only lines (e.g. SM5x/6x control code lines) in the output instead of stripping them.
@@ -61,79 +63,20 @@ namespace {
  *         file, or dumping/translating the sass failed.
  **/
 bool dsass(const std::string& fin, std::optional<std::string> fout = std::nullopt, bool keepcode = false, bool noDescHack = false) {
-    fs::path finPath(fin);
-    std::string fext = finPath.extension().string();
-    for (char& c : fext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-
-    std::string outname = fout.value_or(fs::path(finPath).replace_extension(".dsass").string());
+    const std::string outname = fout.value_or(fs::path(fin).replace_extension(".dsass").string());
     if (!checkOutFileBackup(outname)) {
         return false;
     }
 
-    std::string codeOnlyLineMode = keepcode ? "keep" : "none";
-
-    if (fext == ".sass") {
-        CuAsm::CuInsFeeder feeder(fin);
+    try {
         CuAsm::CuAsmLogger::logEntry("Translating to " + outname + "...");
-        feeder.trans(outname, codeOnlyLineMode);
-    } else if (fext == ".dsass") {
-        CuAsm::CuAsmLogger::logError("Input file \"" + fin + "\" is already a dsass file!!! Skipping...");
+        CuAsm::Tools::dumpControlCodeSass(fin, outname, keepcode, noDescHack);
+    } catch (const CuAsm::CalledProcessError& cpe) {
+        CuAsm::CuAsmLogger::logError(std::string("Error when running cuobjdump!") + cpe.output());
         return false;
-    } else if (fext == ".cubin") {
-        std::string binname;
-        std::string tmpname;
-        bool doDescHack = false;
-        std::string sass;
-
-        try {
-            if (noDescHack) {
-                binname = fin;
-            } else {
-                tmpname = CuAsm::getTempFileName("", "cuasm", "cubin");
-                doDescHack = CuAsm::fixCubinDesc(fin, tmpname);
-                if (doDescHack) {
-                    binname = tmpname;
-                    CuAsm::CuAsmLogger::logWarning("Cubin " + fin + " needs desc hack!");
-                } else {
-                    binname = fin;
-                }
-            }
-
-            CuAsm::CuAsmLogger::logEntry("Dumping sass from " + binname + "...");
-            sass = CuAsm::checkOutput({"cuobjdump", "-sass", binname}, /*mergeStderr=*/false);
-            if (doDescHack) {
-                fs::remove(tmpname);
-            }
-        } catch (const CuAsm::CalledProcessError& cpe) {
-            CuAsm::CuAsmLogger::logError(std::string("Error when running cuobjdump!") + cpe.output());
-            return false;
-        } catch (const std::exception& e) {
-            CuAsm::CuAsmLogger::logError(std::string("DumpSass Error!") + e.what());
-            return false;
-        }
-
-        std::istringstream sio(sass);
-        CuAsm::CuInsFeeder feeder(sio);
-        CuAsm::CuAsmLogger::logEntry("Translating to " + outname + " ...");
-        feeder.trans(outname, codeOnlyLineMode);
-    } else { // default: treat as an arbitrary binary containing a cubin
-        std::string sass;
-
-        try {
-            CuAsm::CuAsmLogger::logEntry("Dumping sass from " + fin + "...");
-            sass = CuAsm::checkOutput({"cuobjdump", "-sass", fin}, /*mergeStderr=*/false);
-        } catch (const CuAsm::CalledProcessError& cpe) {
-            CuAsm::CuAsmLogger::logError(std::string("Error when running cuobjdump!") + cpe.output());
-            return false;
-        } catch (const std::exception& e) {
-            CuAsm::CuAsmLogger::logError(std::string("DumpSass Error!") + e.what());
-            return false;
-        }
-
-        std::istringstream sio(sass);
-        CuAsm::CuInsFeeder feeder(sio);
-        CuAsm::CuAsmLogger::logEntry("Translating to " + outname + " ...");
-        feeder.trans(outname, codeOnlyLineMode);
+    } catch (const std::exception& e) {
+        CuAsm::CuAsmLogger::logError(std::string("DumpSass Error!") + e.what());
+        return false;
     }
 
     return true;

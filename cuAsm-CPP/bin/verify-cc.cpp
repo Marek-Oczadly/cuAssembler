@@ -37,7 +37,7 @@
 #include "../CuAsm/CuAsmLogger.hpp"
 #include "../CuAsm/CuControlCode.hpp"
 #include "../CuAsm/common.hpp"
-#include "ccCommon.hpp"
+#include "CuAsmTools/VerifyCC.hpp"
 #include "cliCommon.hpp"
 
 namespace {
@@ -52,8 +52,9 @@ std::string toHexString(const T& v) {
 
 /**
  * @brief Loads a cubin, decodes each kernel's instructions, and runs real hazard-based
- *        verification against each one (ccCommon.hpp's verifyControlCodes(), Reports/tasks.md
- *        Phase 3), printing a per-instruction listing plus the outcome.
+ *        verification against each one, printing a per-instruction listing plus the outcome. Thin
+ *        CLI wrapper around CuAsmTools/VerifyCC.hpp's verifyCubinControlCodes() -- all the actual
+ *        load/decode/verify work now lives there; this function only formats its report.
  * @param fin Input cubin path.
  * @param kernelFilter If non-empty, restrict output to the kernel with this exact name.
  * @return True if the cubin loaded, decoded, and every kernel was checked (NOT that verification
@@ -62,80 +63,51 @@ std::string toHexString(const T& v) {
  *         uncurated opcode, ...), or an unmatched --kernel filter.
  **/
 bool verifyCC(const std::string& fin, const std::string& kernelFilter) {
-    ELFIO::elfio ef;
-    if (!ef.load(fin)) {
-        CuAsm::CuAsmLogger::logError("Failed to load ELF/cubin \"" + fin + "\"!");
-        return false;
-    }
-
-    const auto arch = CuAsm::Tools::detectArch(ef);
-    if (!arch) {
-        CuAsm::CuAsmLogger::logError("Cubin \"" + fin +
-                                      "\" targets an unsupported SM version -- verify-cc requires Turing "
-                                      "(sm_75) or newer!");
-        return false;
-    }
-    CuAsm::CuAsmLogger::logProcedure("Detected " + arch->getVersionString() + ".");
-
-    const std::vector<CuAsm::Tools::KernelControlCodes> kernels = CuAsm::Tools::loadControlCodes(ef, *arch);
-    if (kernels.empty()) {
-        CuAsm::CuAsmLogger::logError("No \".text.<kernel>\" sections found in \"" + fin + "\"!");
-        return false;
-    }
-
-    std::map<std::string, std::vector<CuAsm::Tools::DecodedInstruction>> decodedByKernel;
     try {
-        decodedByKernel = CuAsm::Tools::decodeInstructions(fin, kernels, *arch);
+        const CuAsm::Tools::CubinVerificationReport report = CuAsm::Tools::verifyCubinControlCodes(fin, kernelFilter);
+
+        CuAsm::CuAsmLogger::logProcedure("Detected " + report.arch.getVersionString() + ".");
+
+        for (const auto& kr : report.kernels) {
+            const CuAsm::Tools::KernelControlCodes& kcc = kr.kcc;
+            std::cout << "Kernel: " << kcc.kernelName << "  (" << kcc.ctrlCodeList.size() << " instructions, "
+                       << report.arch.getVersionString() << ")\n";
+            for (std::size_t i = 0; i < kcc.ctrlCodeList.size(); ++i) {
+                const std::uint64_t addr = report.arch.getInsOffsetFromIndex(static_cast<int>(i));
+                std::cout << "  [" << toHexString(addr) << "] " << CuAsm::CuControlCode::decode(kcc.ctrlCodeList[i])
+                           << "  code=" << toHexString(kcc.insCodeList[i]) << "\n";
+            }
+
+            const CuAsm::Tools::ControlCodeCheckResult& result = kr.result;
+            switch (result.status) {
+            case CuAsm::Tools::CheckStatus::Verified:
+                std::cout << "  Verification: PASSED -- " << result.message << "\n\n";
+                break;
+            case CuAsm::Tools::CheckStatus::Violated:
+                std::cout << "  Verification: FAILED -- " << result.message << "\n";
+                for (const auto& v : result.violations) {
+                    std::cout << "    instruction " << v.consumerIndex << " has an unresolved " << CuAsm::Tools::toString(v.type)
+                               << " hazard from instruction " << v.producerIndex << " on " << CuAsm::Tools::toString(v.regSpace)
+                               << v.regNumber << ": " << v.reason << "\n";
+                }
+                std::cout << "\n";
+                break;
+            case CuAsm::Tools::CheckStatus::NotImplemented:
+                std::cout << "  Verification: NOT IMPLEMENTED -- " << result.message << "\n\n";
+                break;
+            default:
+                break;
+            }
+        }
+
+        return true;
     } catch (const CuAsm::CalledProcessError& cpe) {
         CuAsm::CuAsmLogger::logError(std::string("Error when running cuobjdump: ") + cpe.output());
         return false;
     } catch (const std::exception& e) {
-        CuAsm::CuAsmLogger::logError(std::string("Failed to decode instructions for hazard verification: ") + e.what());
+        CuAsm::CuAsmLogger::logError(e.what());
         return false;
     }
-
-    bool foundFilterMatch = kernelFilter.empty();
-    for (const auto& kcc : kernels) {
-        if (!kernelFilter.empty() && kcc.kernelName != kernelFilter) {
-            continue;
-        }
-        foundFilterMatch = true;
-
-        std::cout << "Kernel: " << kcc.kernelName << "  (" << kcc.ctrlCodeList.size() << " instructions, "
-                   << arch->getVersionString() << ")\n";
-        for (std::size_t i = 0; i < kcc.ctrlCodeList.size(); ++i) {
-            const std::uint64_t addr = arch->getInsOffsetFromIndex(static_cast<int>(i));
-            std::cout << "  [" << toHexString(addr) << "] " << CuAsm::CuControlCode::decode(kcc.ctrlCodeList[i])
-                       << "  code=" << toHexString(kcc.insCodeList[i]) << "\n";
-        }
-
-        const CuAsm::Tools::ControlCodeCheckResult result =
-            CuAsm::Tools::verifyControlCodes(decodedByKernel.at(kcc.kernelName), *arch);
-        switch (result.status) {
-        case CuAsm::Tools::CheckStatus::Verified:
-            std::cout << "  Verification: PASSED -- " << result.message << "\n\n";
-            break;
-        case CuAsm::Tools::CheckStatus::Violated:
-            std::cout << "  Verification: FAILED -- " << result.message << "\n";
-            for (const auto& v : result.violations) {
-                std::cout << "    instruction " << v.consumerIndex << " has an unresolved " << CuAsm::Tools::toString(v.type)
-                           << " hazard from instruction " << v.producerIndex << " on " << CuAsm::Tools::toString(v.regSpace)
-                           << v.regNumber << ": " << v.reason << "\n";
-            }
-            std::cout << "\n";
-            break;
-        case CuAsm::Tools::CheckStatus::NotImplemented:
-            std::cout << "  Verification: NOT IMPLEMENTED -- " << result.message << "\n\n";
-            break;
-        }
-    }
-
-    if (!foundFilterMatch) {
-        CuAsm::CuAsmLogger::logError("Kernel \"" + kernelFilter + "\" not found in \"" + fin + "\"!");
-        return false;
-    }
-
-    return true;
 }
 
 } // namespace

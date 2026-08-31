@@ -34,7 +34,7 @@
 #include <CLI/CLI.hpp>
 
 #include "../CuAsm/CuAsmLogger.hpp"
-#include "../CuAsm/utils/CubinUtils.hpp"
+#include "CuAsmTools/Hcubin.hpp"
 #include "cliCommon.hpp"
 
 namespace fs = std::filesystem;
@@ -43,7 +43,9 @@ namespace {
 
 /**
  * @brief Hacks a cubin's cache-policy desc bit so it is shown explicitly wherever needed, writing
- *        the result to a new cubin file.
+ *        the result to a new cubin file. Thin CLI wrapper around CuAsmTools/Hcubin.hpp's
+ *        hackCubinCachePolicyDesc() -- handles the input-existence/output-backup checks this CLI's
+ *        own established contract requires (see cliCommon.hpp).
  * @param fin Path of the input cubin file.
  * @param fout Optional path of the output cubin file; defaults to fin with its extension replaced by ".hcubin".
  * @return Whether the cubin needed (and received) the desc hack (true) or its SM version predates
@@ -57,7 +59,7 @@ std::optional<bool> hcubin(const std::string& fin, std::optional<std::string> fo
         return std::nullopt;
     }
 
-    return CuAsm::fixCubinDesc(fin, outname);
+    return CuAsm::Tools::hackCubinCachePolicyDesc(fin, outname);
 }
 
 } // namespace
