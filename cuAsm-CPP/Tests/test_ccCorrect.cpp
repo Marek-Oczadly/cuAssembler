@@ -41,6 +41,7 @@ constexpr std::int64_t c_Pt = 7;
 
 const LatencyClassEntry c_Fixed{LatencyKind::FIXED, std::nullopt};
 const LatencyClassEntry c_VariableWrite{LatencyKind::VARIABLE, BarrierType::WRITE};
+const LatencyClassEntry c_VariableRead{LatencyKind::VARIABLE, BarrierType::READ};
 
 /**
  * @brief Builds a synthetic DecodedInstruction by hand, exactly like test_ccHazard.cpp's own
@@ -112,6 +113,11 @@ int main() {
                 !isBarrierEligible(c_VariableWrite, BarrierType::READ));
         t.check("a FIXED producer is never barrier-eligible", !isBarrierEligible(c_Fixed, BarrierType::WRITE) &&
                                                                     !isBarrierEligible(c_Fixed, BarrierType::READ));
+
+        t.check("a VARIABLE:READ producer is barrier-eligible for a READ-relevant (WAR) edge",
+                isBarrierEligible(c_VariableRead, BarrierType::READ));
+        t.check("a VARIABLE:READ producer is NOT barrier-eligible for a WRITE-relevant edge (its other access)",
+                !isBarrierEligible(c_VariableRead, BarrierType::WRITE));
     }
 
     // ---- collectBarrierIntervals() ----
@@ -182,6 +188,19 @@ int main() {
         t.check("assignBarrierSlots() reports no valid assignment for more simultaneous intervals than physical slots",
                 !assignBarrierSlots(intervals).has_value());
     }
+    {
+        // getReadSB()/getWriteSB() draw from the same 6-id physical slot pool (Reports/tasks.md
+        // Phase 1.1's confirmation that a real instruction can set both simultaneously) -- two
+        // overlapping intervals must need distinct slots even when their *direction* differs.
+        const std::vector<BarrierInterval> intervals = {
+            {0, 3, BarrierType::WRITE},
+            {1, 4, BarrierType::READ},
+        };
+        const auto assignment = assignBarrierSlots(intervals);
+        t.check("assignBarrierSlots() succeeds for two overlapping intervals of different directions", assignment.has_value());
+        t.check("...and still assigns them distinct slots, since direction doesn't partition the slot pool",
+                assignment.has_value() && assignment->slotsUsed == 2 && assignment->slotOf.at(0) != assignment->slotOf.at(1));
+    }
 
     // ---- correctControlCodes(): closes an open VARIABLE:WRITE RAW hazard ----
     {
@@ -249,6 +268,127 @@ int main() {
         }
         t.check("re-verifying an already-correct, re-corrected sequence still reports Verified",
                 verifyControlCodes(reChecked, CuAsm::CuSMVersion(75)).status == CheckStatus::Verified);
+    }
+
+    // ---- correctControlCodes(): closes an open VARIABLE:READ WAR hazard (not just RAW/WRITE) ----
+    {
+        // 0: "STG [R4], R5;"-shaped producer -- VARIABLE:READ, protects its still-in-flight read
+        //    of R4 (the address it's writing through). Starts with no read barrier opened at all
+        //    *and* a zero stall count, so the FIXED-latency fallback rule doesn't accidentally mask
+        //    the open hazard (see simulateAndVerify()'s "producer actually opens the barrier" check).
+        // 1: overwrites R4 immediately -- an open WAR hazard.
+        const std::vector<DecodedInstruction> decoded = {
+            makeIns("STG_ARI_R", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::READ}}, c_VariableRead,
+                    CuControlCode::mergeCode(/*waitbar=*/0, /*readbar=*/7, /*writebar=*/7, /*yieldFlag=*/1, /*stall=*/0)),
+            makeIns("MOV_R_II", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+        };
+        t.check("the synthetic WAR input actually starts out violated (sanity check on the test itself)",
+                verifyControlCodes(decoded, CuAsm::CuSMVersion(75)).status == CheckStatus::Violated);
+
+        KernelControlCodes kcc = makeKcc(decoded);
+        const ControlCodeCheckResult result = correctControlCodes(kcc, decoded, CuAsm::CuSMVersion(75));
+        t.check("correctControlCodes() reports Corrected for a repairable open VARIABLE:READ WAR hazard",
+                result.status == CheckStatus::Corrected);
+
+        const CuControlCode producer(kcc.ctrlCodeList[0]);
+        t.check("the producer's READ barrier (not WRITE) was opened to close the WAR hazard",
+                producer.getReadSB() != -1 && producer.getWriteSB() == -1);
+
+        std::vector<DecodedInstruction> reChecked = decoded;
+        for (std::size_t i = 0; i < reChecked.size(); ++i) {
+            reChecked[i].ctrlCode = CuControlCode(kcc.ctrlCodeList[i]);
+        }
+        t.check("the corrected WAR hazard re-verifies clean", verifyControlCodes(reChecked, CuAsm::CuSMVersion(75)).status ==
+                                                                    CheckStatus::Verified);
+    }
+
+    // ---- correctControlCodes(): never lowers an existing stall count below what it already was,
+    // even when the hazard model itself only ever requires 1 ----
+    {
+        // Producer already has stall=5 (well above what a zero-stall adjacency check would need);
+        // the FIXED-latency hazard is already satisfied, but correction recomputes requiredStall
+        // unconditionally for every adjacent edge -- max(5, 1) must stay 5, not drop to 1.
+        const std::vector<DecodedInstruction> decoded = {
+            makeIns("MOV_R_II", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed,
+                    CuControlCode::mergeCode(0, 7, 7, 1, /*stall=*/5)),
+            makeIns("MOV_R_R", {c_Pt, 5, 4}, {{OperandKind::GPR, AccessMode::WRITE}, {OperandKind::GPR, AccessMode::READ}}, c_Fixed,
+                    CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+        };
+        KernelControlCodes kcc = makeKcc(decoded);
+        const ControlCodeCheckResult result = correctControlCodes(kcc, decoded, CuAsm::CuSMVersion(75));
+        t.check("correctControlCodes() reports Corrected for an already-satisfied FIXED-latency hazard",
+                result.status == CheckStatus::Corrected);
+        const CuControlCode fixedProducer(kcc.ctrlCodeList[0]);
+        t.checkEqual("the producer's stall count of 5 is preserved exactly, not lowered to the required minimum of 1",
+                     fixedProducer.getStallCount(), std::uint32_t{5});
+    }
+
+    // ---- correctControlCodes(): two non-overlapping VARIABLE producers share one physical slot,
+    // end to end (not just at the assignBarrierSlots() unit level) ----
+    {
+        // 0: VARIABLE:WRITE producer A on R4.
+        // 1: consumer of A (RAW) -- A's interval is [0, 1), closed here.
+        // 2: VARIABLE:WRITE producer B on R6 -- starts only once A's interval has already ended.
+        // 3: consumer of B (RAW) -- B's interval is [2, 3), never overlapping A's.
+        const std::vector<DecodedInstruction> decoded = {
+            makeIns("LDG_R_ARI", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
+                    CuControlCode::mergeCode(0, 7, 0, 1, 2)),
+            makeIns("MOV_R_R", {c_Pt, 5, 4}, {{OperandKind::GPR, AccessMode::WRITE}, {OperandKind::GPR, AccessMode::READ}}, c_Fixed,
+                    CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+            makeIns("LDG_R_ARI", {c_Pt, 6}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
+                    CuControlCode::mergeCode(0, 7, 0, 1, 2)),
+            makeIns("MOV_R_R", {c_Pt, 7, 6}, {{OperandKind::GPR, AccessMode::WRITE}, {OperandKind::GPR, AccessMode::READ}}, c_Fixed,
+                    CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+        };
+        KernelControlCodes kcc = makeKcc(decoded);
+        const ControlCodeCheckResult result = correctControlCodes(kcc, decoded, CuAsm::CuSMVersion(75));
+        t.check("correctControlCodes() reports Corrected for two non-overlapping VARIABLE producers", result.status == CheckStatus::Corrected);
+        t.check("...using exactly one scoreboard slot (they don't overlap in time)", result.message.find("1/6") != std::string::npos);
+
+        const CuControlCode producerA(kcc.ctrlCodeList[0]);
+        const CuControlCode producerB(kcc.ctrlCodeList[2]);
+        t.checkEqual("both non-overlapping producers are assigned the identical physical slot",
+                     producerA.getWriteSB(), producerB.getWriteSB());
+
+        std::vector<DecodedInstruction> reChecked = decoded;
+        for (std::size_t i = 0; i < reChecked.size(); ++i) {
+            reChecked[i].ctrlCode = CuControlCode(kcc.ctrlCodeList[i]);
+        }
+        t.check("the shared-slot correction re-verifies clean", verifyControlCodes(reChecked, CuAsm::CuSMVersion(75)).status ==
+                                                                      CheckStatus::Verified);
+    }
+
+    // ---- correctControlCodes(): two overlapping VARIABLE producers get distinct slots, end to end ----
+    {
+        // 0: VARIABLE:WRITE producer A on R4.
+        // 1: VARIABLE:WRITE producer B on R6 -- issued before A's own consumer, so both are live
+        //    simultaneously.
+        // 2: consumer reading both R4 and R6 -- A's interval [0, 2) and B's interval [1, 2) overlap.
+        const std::vector<DecodedInstruction> decoded = {
+            makeIns("LDG_R_ARI", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
+                    CuControlCode::mergeCode(0, 7, 0, 1, 2)),
+            makeIns("LDG_R_ARI", {c_Pt, 6}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
+                    CuControlCode::mergeCode(0, 7, 0, 1, 2)),
+            makeIns("IADD3_R_R_R_R", {c_Pt, 8, 4, 6, 255},
+                    {{OperandKind::GPR, AccessMode::WRITE}, {OperandKind::GPR, AccessMode::READ}, {OperandKind::GPR, AccessMode::READ},
+                     {OperandKind::GPR, AccessMode::READ}},
+                    c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+        };
+        KernelControlCodes kcc = makeKcc(decoded);
+        const ControlCodeCheckResult result = correctControlCodes(kcc, decoded, CuAsm::CuSMVersion(75));
+        t.check("correctControlCodes() reports Corrected for two overlapping VARIABLE producers", result.status == CheckStatus::Corrected);
+
+        const CuControlCode producerA(kcc.ctrlCodeList[0]);
+        const CuControlCode producerB(kcc.ctrlCodeList[1]);
+        t.check("two simultaneously-live producers are assigned distinct physical slots",
+                producerA.getWriteSB() != -1 && producerB.getWriteSB() != -1 && producerA.getWriteSB() != producerB.getWriteSB());
+
+        std::vector<DecodedInstruction> reChecked = decoded;
+        for (std::size_t i = 0; i < reChecked.size(); ++i) {
+            reChecked[i].ctrlCode = CuControlCode(kcc.ctrlCodeList[i]);
+        }
+        t.check("the distinct-slot correction re-verifies clean", verifyControlCodes(reChecked, CuAsm::CuSMVersion(75)).status ==
+                                                                        CheckStatus::Verified);
     }
 
     // ---- correctControlCodes(): unrepairable (>6 simultaneously-live VARIABLE producers) ----

@@ -89,7 +89,16 @@ add_executable(test_ccCorrect test_ccCorrect.cpp)
 target_link_libraries(test_ccCorrect PRIVATE CuAsm elfio::elfio Boost::graph)
 add_test(NAME test_ccCorrect COMMAND test_ccCorrect)
 
+# Exercises bin/ccCommon.hpp's computeControlFlowSuccessors() directly against hand-built
+# synthetic DecodedInstruction sequences, in particular its handling of an ".ABS"-modified BRA/JMP
+# immediate target (insVals.back() is a raw absolute address for those, not a PC-relative offset --
+# see CuInsParser::specialTreatment()'s own "ABS" check) -- no cuobjdump/real cubin needed here.
+add_executable(test_ccControlFlow test_ccControlFlow.cpp)
+target_link_libraries(test_ccControlFlow PRIVATE CuAsm elfio::elfio Boost::graph)
+add_test(NAME test_ccControlFlow COMMAND test_ccControlFlow)
+
 add_subdirectory(utils)
 add_subdirectory(CheckDisasm)
 add_subdirectory(CheckControlCodes)
 add_subdirectory(CheckControlCodesShuffle)
+add_subdirectory(CheckControlCodesRoundtrip)

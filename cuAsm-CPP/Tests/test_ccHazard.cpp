@@ -75,6 +75,27 @@ DecodedInstruction makeIns(std::string insKey, std::vector<std::int64_t> insVals
     };
 }
 
+/**
+ * @brief Same as makeIns(), but with an explicit address -- needed for the CFG-aware
+ *        buildHazardGraph() tests below, since computeControlFlowSuccessors() resolves branch
+ *        targets from real instruction addresses (makeIns() always hardcodes address=0, which is
+ *        fine for the straight-line sequences the rest of this file uses, but not for anything
+ *        containing a real branch).
+ * @param address This instruction's address within its (synthetic) kernel.
+ * @param insKey Label for this instruction.
+ * @param insVals insVals[0] is the guard-predicate value; insVals[1..] align 1:1 with roles.
+ * @param roles Per-operand roles, aligned with insVals[1..].
+ * @param latency This instruction's latency classification.
+ * @param ctrl Raw control code (see CuControlCode::mergeCode()).
+ * @return The synthetic instruction.
+ **/
+DecodedInstruction makeInsAt(std::uint64_t address, std::string insKey, std::vector<std::int64_t> insVals,
+                              std::vector<OperandRoleEntry> roles, LatencyClassEntry latency, std::uint32_t ctrl) {
+    DecodedInstruction ins = makeIns(std::move(insKey), std::move(insVals), std::move(roles), latency, ctrl);
+    ins.address = address;
+    return ins;
+}
+
 /** @brief Finds a violation matching (producerIndex, consumerIndex) in a violation list, or nullptr. */
 const HazardViolation* findViolation(const std::vector<HazardViolation>& violations, std::size_t producer, std::size_t consumer) {
     for (const auto& v : violations) {
@@ -362,6 +383,88 @@ int main() {
         };
         t.check("...but is not flagged once the producer's stall count is nonzero, same as an ordinary FIXED-latency hazard",
                 simulateAndVerify(adjacentNonzeroStall, buildHazardGraph(adjacentNonzeroStall)).empty());
+    }
+
+    // ---- buildHazardGraph(): CFG-aware reconvergence -- two mutually-exclusive branch legs that
+    // each write the same register must NOT interfere with each other, but both must correctly
+    // reach a shared reconvergence-point reader (Reports/tasks.md's 2026-08-30 CFG-blindness fix,
+    // §3's "New gotchas" item -- this is the exact shape that fix targets). ----
+    {
+        // 0 (0x00): "@P0 BRA 0x30;"        -- conditional, succ = {1 (fallthrough), 3 (target)}.
+        // 1 (0x10): writes R4               -- the "P0 false" leg.
+        // 2 (0x20): "BRA 0x40;"             -- unconditional, jumps over instruction 3 to reconverge.
+        // 3 (0x30): writes R4               -- the "P0 true" leg, reached directly from instruction 0.
+        // 4 (0x40): reads R4                -- reconvergence point; must see BOTH 1 and 3 as reaching
+        //           writers, but 1 and 3 must never see each other (they can never both execute on
+        //           the same thread's path).
+        const std::vector<DecodedInstruction> instrs = {
+            makeInsAt(0x00, "BRA_II", {0, 0x20}, {}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+            makeInsAt(0x10, "MOV_R_II", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed,
+                      CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+            makeInsAt(0x20, "BRA_II", {c_Pt, 0x10}, {}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+            makeInsAt(0x30, "MOV_R_II", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed,
+                      CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+            makeInsAt(0x40, "MOV_R_R", {c_Pt, 5, 4}, {{OperandKind::GPR, AccessMode::WRITE}, {OperandKind::GPR, AccessMode::READ}},
+                      c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+        };
+        const auto graph = buildHazardGraph(instrs);
+        t.checkEqual("a diamond CFG's reconvergence point gets exactly 2 RAW edges (one per sibling leg), no more",
+                     boost::num_edges(graph), std::size_t{2});
+        const auto [e14, e14Found] = boost::edge(1, 4, graph);
+        t.check("edge 1->4 (the \"P0 false\" leg's write) exists and is RAW on R4",
+                e14Found && graph[e14].type == HazardType::RAW && graph[e14].regNumber == 4);
+        const auto [e34, e34Found] = boost::edge(3, 4, graph);
+        t.check("edge 3->4 (the \"P0 true\" leg's write) exists and is RAW on R4",
+                e34Found && graph[e34].type == HazardType::RAW && graph[e34].regNumber == 4);
+        const auto [e13, e13Found] = boost::edge(1, 3, graph);
+        const auto [e31, e31Found] = boost::edge(3, 1, graph);
+        t.check("the two sibling legs (1 and 3) have no edge between them in either direction -- they "
+                "can never both execute on the same thread's path",
+                !e13Found && !e31Found);
+    }
+
+    // ---- buildHazardGraph(): a loop's back-edge is deliberately dropped from the reaching-
+    // definitions dataflow (Reports/tasks.md's documented, still-open "loop-carried hazards are not
+    // modeled" limitation) -- this locks in that documented behavior so a future change to this
+    // rule is a deliberate decision, not an accidental regression. ----
+    {
+        // 0 (0x00): reads R4               -- the loop's top; on a *real* second iteration this
+        //           would depend on instruction 1's write from the *previous* iteration, but that
+        //           dependency can only be reached via instruction 2's backward branch.
+        // 1 (0x10): writes R4.
+        // 2 (0x20): "BRA 0x00;"            -- unconditional loop-back edge (target 0 <= source 2).
+        const std::vector<DecodedInstruction> instrs = {
+            makeInsAt(0x00, "MOV_R_R", {c_Pt, 9, 4}, {{OperandKind::GPR, AccessMode::WRITE}, {OperandKind::GPR, AccessMode::READ}},
+                      c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+            makeInsAt(0x10, "MOV_R_II", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed,
+                      CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+            makeInsAt(0x20, "BRA_II", {c_Pt, -0x30}, {}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+        };
+        const auto graph = buildHazardGraph(instrs);
+        t.checkEqual("instruction 0 (the loop top) has no incoming hazard edges at all -- the only "
+                     "thing that could reach it (the backward branch) is deliberately excluded",
+                     boost::in_degree(0, graph), std::size_t{0});
+        const auto [e10, e10Found] = boost::edge(1, 0, graph);
+        t.check("no RAW edge exists from instruction 1's write back to instruction 0's read across "
+                "the (dropped) loop back-edge",
+                !e10Found);
+    }
+
+    // ---- buildHazardGraph(): a dead (@!PT) branch with an unresolvable target must not corrupt or
+    // crash the graph builder -- computeControlFlowSuccessors() never attempts to resolve a target
+    // it will never take (see test_ccControlFlow.cpp for the focused version of this check; this
+    // confirms buildHazardGraph() built on top of it inherits the same safety). ----
+    {
+        const std::vector<DecodedInstruction> instrs = {
+            makeInsAt(0x00, "BRA_II", {15, 0x7fffffff}, {}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+            makeInsAt(0x10, "MOV_R_II", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed,
+                      CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+        };
+        CuAsm::Tools::HazardGraph graph;
+        t.checkNoThrow("buildHazardGraph() tolerates a dead (@!PT) branch with an unresolvable target",
+                        [&]() { graph = buildHazardGraph(instrs); });
+        t.checkEqual("...and produces no hazard edges for this 2-instruction sequence (no real dependency exists)",
+                     boost::num_edges(graph), std::size_t{0});
     }
 
     // ---- verifyControlCodes(): the public wrapper ----

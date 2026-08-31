@@ -384,7 +384,13 @@ inline GuardKind guardKindOf(const DecodedInstruction& ins) {
  *        - `BRA`/`JMP` with a resolvable immediate target (InsKey ends "_II", per
  *          CuInsParser::specialTreatment()'s relative-offset encoding for addrFuncs): target
  *          successor unless GuardKind::AlwaysFalse, fallthrough successor unless
- *          GuardKind::AlwaysTrue -- i.e. both for a real conditional branch.
+ *          GuardKind::AlwaysTrue -- i.e. both for a real conditional branch. An ".ABS" modifier
+ *          (insModi contains "0_ABS", e.g. `BRA.ABS 0x...;`) means specialTreatment() left the
+ *          immediate as a raw absolute address instead of converting it to a PC-relative offset
+ *          (see its own `m_InsOpFull.find("ABS")` check) -- this function must mirror that and use
+ *          the immediate directly as the target rather than adding address+instructionLength to
+ *          it, or it silently computes the wrong target address (previously unhandled: this
+ *          function used the relative-offset formula unconditionally).
  *        - Anything else that still needs a target it can't resolve (`BRX`/`BRXU`/`JMX`/`JMXU`
  *          computed jump tables, or a `BRA`/`JMP` whose target isn't a plain immediate) is a hard
  *          error, not a guess -- out of scope per this codebase's existing curation philosophy;
@@ -454,10 +460,16 @@ inline std::vector<std::vector<std::size_t>> computeControlFlowSuccessors(const 
                                           "resolved -- out of scope, see this function's doc");
             }
 
+            const bool isAbsolute =
+                std::find(instrs[i].insModi.begin(), instrs[i].insModi.end(), "0_ABS") != instrs[i].insModi.end();
+
             const GuardKind guard = guardKindOf(instrs[i]);
             if (guard != GuardKind::AlwaysFalse) {
-                const std::int64_t len = ensureInstructionLength();
-                const std::int64_t target = instrs[i].insVals.back() + static_cast<std::int64_t>(instrs[i].address) + len;
+                std::int64_t target = instrs[i].insVals.back();
+                if (!isAbsolute) {
+                    const std::int64_t len = ensureInstructionLength();
+                    target += static_cast<std::int64_t>(instrs[i].address) + len;
+                }
                 ensureAddrIndex();
                 const auto it = target >= 0 ? addrToIndex.find(static_cast<std::uint64_t>(target)) : addrToIndex.end();
                 if (it == addrToIndex.end()) {
