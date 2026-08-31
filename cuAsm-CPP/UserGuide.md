@@ -402,20 +402,40 @@ In CuAssembler, `CuInsFeeder` class can read this SASS file and iteratively yiel
 
 `CuInsParser` will read in the instruction string and address, and then parse it into intruction value vector and modifier set. A sample code snippet:
 
-```python
-fname = r'TestData\CuTest\cudatest.sm_75.sass'
-feeder = CuInsFeeder(fname)
+```cpp
+#include <iostream>
 
-cip = CuInsParser(arch='sm_75')
+#include "CuAsm/CuInsFeeder.hpp"
+#include "CuAsm/CuInsParser.hpp"
 
-for  addr, code, asm, ctrl in feeder:
-    print('0x%04x :   0x%06x   0x%028x   %s'% (addr, ctrl, code, asm))
+CuAsm::CuInsFeeder feeder(R"(TestData\CuTest\cudatest.sm_75.sass)");
+CuAsm::CuInsParser cip("sm_75");
 
-    ins_key, ins_vals, ins_modi = cip.parse(asm, addr, code)
-    print('    Ins_Key = %s'%ins_key)
-    print('    Ins_Vals = %s'%str(ins_vals))
-    print('    Ins_Modi = %s'%str(ins_modi))
+while (auto rec = feeder.next()) {
+    std::cout << std::hex << std::showbase << rec->addr << " :   " << rec->ctrl << "   " << rec->code
+               << "   " << std::dec << rec->asmText << "\n";
+
+    auto [insKey, insVals, insModi] = cip.parse(rec->asmText, rec->addr, rec->code);
+    std::cout << "    Ins_Key = " << insKey << "\n";
+
+    std::cout << "    Ins_Vals = [";
+    for (std::size_t i = 0; i < insVals.size(); ++i) {
+        std::cout << (i ? ", " : "") << insVals[i];
+    }
+    std::cout << "]\n";
+
+    std::cout << "    Ins_Modi = [";
+    for (std::size_t i = 0; i < insModi.size(); ++i) {
+        std::cout << (i ? ", " : "") << "'" << insModi[i] << "'";
+    }
+    std::cout << "]\n";
+}
 ```
+
+(`CuInsFeeder::next()` returns `std::optional<CuInsRecord>` -- a `{addr, code, asmText, ctrl}`
+struct -- rather than making `CuInsFeeder` itself an STL-style iterator; the loop above ends when
+it returns `std::nullopt`. `code` is a `CuAsm::BigInt`, wide enough for the >64-bit instruction
+codes on sm_7x/8x+.)
 
 This may yield a list such as:
 
@@ -440,13 +460,16 @@ This may yield a list such as:
 
 The CuAssembler class `CuInsAssembler` is obligated to encode the instruction according to the value vector and modifier set. Since every instruction key has different value meaning and different modifier set, an instance of `CuInsAssembler` will only handle one key. An instance of `CuInsAssemblerRepos` class holds a repository for all known instruction keys. Given an SASS file source, `CuInsAssemblerRepos` can build the repository with instructions therein, and save the result to a file for later use:
 
-```python
-sassname = 'cublas64_11.sm_75.sass'
-arch = 'sm_75'
-feeder = CuInsFeeder(sassname, arch=arch)   # initialize a feeder
-repos = CuInsAssemblerRepos(arch=arch)      # initialize an empty repos
-repos.update(feeder)                        # Update the repos with instructions from feeder
-repos.save2file('Repos.'+arch+'.txt')       # Save the repos to file, may be loaded back later
+```cpp
+#include "CuAsm/CuInsAssemblerRepos.hpp"
+#include "CuAsm/CuInsFeeder.hpp"
+
+std::string sassname = "cublas64_11.sm_75.sass";
+std::string arch = "sm_75";
+CuAsm::CuInsFeeder feeder(sassname, arch);             // initialize a feeder, filtered to this arch
+CuAsm::CuInsAssemblerRepos repos(std::nullopt, arch);  // initialize an empty repos for this arch
+repos.update(feeder);                                  // update the repos with instructions from feeder
+repos.save2file("Repos." + arch + ".txt");             // save the repos to file, may be loaded back later
 ```
 
 Building repository is usually rather time-consuming, thus a prebuilt repository is available in the `InsAsmRepos` directory (The coverage of `sm_75` is good, but poor for `sm_61` and `sm_86`, and probably wrong treatments). `CuInsAssemblerRepos` also provides subroutines to update, verify, and merge the repository from a new SASS file, or even from another repository. 

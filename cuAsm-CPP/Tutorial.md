@@ -103,7 +103,7 @@ Cubin is binary, it cannot be modified directly by the user. Thus we need to dis
 
 **Command-Line Approach**:
 
-The script `CuAssembler/bin/cuasm.py` provides a handy way to disassembly cubin into cuasm text form. Run `cuasm -h` for more information.
+The `cuasm` command-line tool (built from `bin/cuasm.cpp`) provides a handy way to disassemble cubin into cuasm text form. Run `cuasm -h` for more information, or see [README.md](README.md#cuasm) for the full option/example list.
 
 ```
 cuasm cudatest.sm_75.cubin
@@ -112,15 +112,22 @@ cuasm cudatest.sm_75.cubin
 This will generate the disassembly file `cudatest.sm_75.cuasm`, easier to understand and edit. NOTE: the disassembly is mostly inherited from `nvdisasm`, but with some new directives for CuAssembler to assemble it back. The original disassembly of `nvdisasm` will not be recognized by CuAssembler.
 
 **Programming Approach**:
-Since CuAssembler is a python package, most of the functionalities can be reached with programming. We can create a python script of CuAssembler to disassemble the `cubin` into `cuasm`. 
+Since CuAssembler is also a C++ library, most of the functionality can be reached directly with code -- either through `CuAsm::CubinFile` itself, or through the higher-level `CuAsm::Tools::disassembleCubin()` wrapper (`include/CuAsmTools/Cuasm.hpp`, see [README.md](README.md#c-library-interface)) that the `cuasm` CLI tool itself is built on:
 
-```python
-from CuAsm.CubinFile import CubinFile
+```cpp
+#include "CuAsm/CubinFile.hpp"
 
-binname = 'cudatest.sm_75.cubin'
-cf = CubinFile(binname)
-asmname = binname.replace('.cubin', '.cuasm')
-cf.saveAsCuAsm(asmname)
+std::string binname = "cudatest.sm_75.cubin";
+CuAsm::CubinFile cf(binname);
+std::string asmname = "cudatest.sm_75.cuasm";
+cf.saveAsCuAsm(asmname);
+```
+
+```cpp
+#include "CuAsmTools/Cuasm.hpp"
+
+// Same result, with extension inference and no manual string-replace needed -- throws on failure.
+CuAsm::Tools::disassembleCubin("cudatest.sm_75.cubin");
 ```
 
 For most cases, the command-line approach is more handy, yet the programming approach is more flexible and can support much more complex pre-processing or post-processing.
@@ -147,14 +154,22 @@ CAUTION: the default output of `cuasm cudatest.sm_75.cuasm` may override origina
 
 **Programming Approach**:
 
-```python
-from CuAsm.CuAsmParser import CuAsmParser
+```cpp
+#include "CuAsm/CuAsmParser.hpp"
 
-asmname = 'cudatest.7.sm_75.cuasm'
-binname = 'new_cudatest.7.sm_75.cubin'
-cap = CuAsmParser()
-cap.parse(asmname)
-cap.saveAsCubin(binname)
+std::string asmname = "cudatest.7.sm_75.cuasm";
+std::string binname = "new_cudatest.7.sm_75.cubin";
+CuAsm::CuAsmParser cap;
+cap.parse(asmname);
+cap.saveAsCubin(binname);
+```
+
+Or, again, the higher-level wrapper:
+
+```cpp
+#include "CuAsmTools/Cuasm.hpp"
+
+CuAsm::Tools::assembleCuasm("cudatest.7.sm_75.cuasm", "new_cudatest.7.sm_75.cubin");
 ```
 
 ### Hack the original executable 
