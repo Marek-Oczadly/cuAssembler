@@ -1,5 +1,5 @@
 # LatencyClass table for sm_86 -- curated instruction latency/pipe classification,
-# keyed by InsKey. Loaded by CuAsm::LatencyClassTable (cuAsm-CPP/CuAsm/LatencyClass.hpp).
+# keyed by InsKey. Loaded by CuAsm::LatencyClassTable (CuAsm/LatencyClass.hpp).
 #
 # Auto-generated DRAFT by Scripts/gen_io_info.py from DefaultInsAsmRepos.sm_86.txt --
 # see Reports/tasks.md Phase 1 for the curation policy this followed. Only the

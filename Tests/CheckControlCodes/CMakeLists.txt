@@ -1,6 +1,6 @@
 # CheckControlCodes fixture tests (Reports/tasks.md Phase 5): for each kernel, nvcc compiles the
 # same .cu fixture CheckDisasm already uses (TestData/CheckDisasm/<Kernel>) to a fresh cubin,
-# cuAsm-CPP decodes its real ptxas-scheduled control codes (bin/ccCommon.hpp's decodeInstructions()),
+# CuAsm decodes its real ptxas-scheduled control codes (bin/ccCommon.hpp's decodeInstructions()),
 # and runs hazard-based verification (verifyControlCodes()) against every kernel function found.
 # Turing (sm_75) only, on purpose -- Reports/tasks.md's OperandRoleTable/LatencyClassTable are fully
 # curated (zero TODOs) for sm_75, but sm_80/sm_86 still carry real TODO gaps, so running this same

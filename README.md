@@ -1,7 +1,7 @@
 # CuAssembler: An unofficial CUDA assembler
 
 This is a C++ port of [cloudcores/CuAssembler](https://github.com/cloudcores/CuAssembler) (MIT
-licensed), living under `cuAsm-CPP/`. See [build.md](build.md) for how to build it on Windows or
+licensed). See [build.md](build.md) for how to build it on Windows or
 Linux (Linux untested), and [Tutorial.md](Tutorial.md)/[UserGuide.md](UserGuide.md) for the
 `.cuasm` text format itself, which this port still uses.
 

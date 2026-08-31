@@ -22,8 +22,8 @@ add_library(CuAsm STATIC
 target_include_directories(CuAsm PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/..
-    # cuAsm-CPP/include: CuAsmTools/*.hpp, the clean C++ interface to the bin/ CLI tools (see
-    # cuAsm-CPP/include/CuAsmTools/CuAsmTools.hpp) -- PUBLIC here so every consumer of CuAsm can
+    # include/: CuAsmTools/*.hpp, the clean C++ interface to the bin/ CLI tools (see
+    # include/CuAsmTools/CuAsmTools.hpp) -- PUBLIC here so every consumer of CuAsm can
     # `#include "CuAsmTools/VerifyCC.hpp"` etc. without a relative "../../include/..." path.
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
 )

@@ -3,6 +3,6 @@ build
 *.log
 .vs
 .claude
-cuAsm-CPP/TestData/CheckDisasm/**/*.cubin
-cuAsm-CPP/TestData/CheckDisasm/**/*.cuasm
+TestData/CheckDisasm/**/*.cubin
+TestData/CheckDisasm/**/*.cuasm
 Scripts

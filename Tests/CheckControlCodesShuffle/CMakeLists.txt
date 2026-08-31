@@ -1,6 +1,6 @@
 # CheckControlCodesShuffle fixture tests (Reports/tasks.md Phase 5): for each kernel, nvcc compiles
 # the same .cu fixture CheckDisasm/CheckControlCodes already use (TestData/CheckDisasm/<Kernel>) to
-# a fresh cubin, cuAsm-CPP decodes its real ptxas-scheduled control codes, physically shuffles a
+# a fresh cubin, CuAsm decodes its real ptxas-scheduled control codes, physically shuffles a
 # legal subset of its instructions into a genuinely different (dependency-respecting) order, and
 # checks that correctControlCodes() repairs the result into control codes that independently
 # re-verify clean -- unlike CheckControlCodes, which only ever checks a kernel's original,

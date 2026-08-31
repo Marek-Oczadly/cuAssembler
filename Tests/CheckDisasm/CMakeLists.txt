@@ -1,5 +1,5 @@
 # CheckDisasm round-trip tests: for each (kernel, architecture) pair, nvcc compiles the
-# kernel's .cu fixture under TestData/CheckDisasm/<Kernel> to a .cubin, cuAsm-CPP disassembles
+# kernel's .cu fixture under TestData/CheckDisasm/<Kernel> to a .cubin, CuAsm disassembles
 # it, reassembles that disassembly, and the result is compared byte-for-byte against the
 # original cubin. One executable per pair, named test_CheckDisasm_<Kernel>_<Arch>.
 

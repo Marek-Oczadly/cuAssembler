@@ -1,5 +1,5 @@
 # IOInfo table for sm_86 -- curated operand read/write roles, keyed by InsKey.
-# Loaded by CuAsm::OperandRoleTable (cuAsm-CPP/CuAsm/OperandRole.hpp).
+# Loaded by CuAsm::OperandRoleTable (CuAsm/OperandRole.hpp).
 #
 # Auto-generated DRAFT by Scripts/gen_io_info.py from DefaultInsAsmRepos.sm_86.txt --
 # see Reports/tasks.md Phase 0 for the curation policy this followed. Only the

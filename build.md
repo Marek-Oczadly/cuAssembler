@@ -1,6 +1,6 @@
 # Building cuAssembler2 (C++)
 
-This covers building the C++ port under `cuAsm-CPP/`: the `CuAsm` static library, the `bin/`
+This covers building the C++ port: the `CuAsm` static library, the `bin/`
 command-line tools (`cuasm`, `dsass`, `hcubin`, `hnvcc`, `verify-cc`, `correct-cc`, `cc-diff-run`),
 and the test suite. See [README.md](README.md) for what each of those actually does.
 
@@ -81,11 +81,11 @@ editing a handful of files, which is much faster than the scripts' always-clean 
 In a Developer Command Prompt for VS 2022 (or after running `vcvarsall.bat x64`):
 
 ```cmd
-cmake -S cuAsm-CPP -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE="%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake"
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE="%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake"
 msbuild build\cuAsmCPP.sln /p:Configuration=Release /m
 ```
 
-`cmake -S cuAsm-CPP -B build` on its own (re-running against an existing `build/` directory) is a
+`cmake -S . -B build` on its own (re-running against an existing `build/` directory) is a
 fast reconfigure, not a full wipe -- prefer it over `build.bat` when you've only touched
 `CMakeLists.txt` files or added/removed source files, not when you just edited existing `.cpp`/
 `.hpp` bodies (which `msbuild` alone picks up incrementally with no reconfigure needed).
@@ -137,7 +137,7 @@ Graphviz (`dot`) is optional, same as on Windows.
 There is no Linux equivalent of `build.bat`/`test.bat` yet -- configure and build directly:
 
 ```sh
-cmake -S cuAsm-CPP -B build -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
