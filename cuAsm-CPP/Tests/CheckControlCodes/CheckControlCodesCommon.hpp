@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <iostream>
 #include <map>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -52,29 +53,40 @@ inline int smArchNumberCC(const std::string& arch) {
     return std::stoi(arch.substr(underscore + 1));
 }
 
+/// Result of compileAndDecodeCC(): a fixture kernel's control-code lists and role/latency-annotated
+/// decoded instructions, ready for verifyControlCodes()/correctControlCodes() -- everything a
+/// caller needs, without keeping the ELFIO reader itself around (loadControlCodes() already copies
+/// every list it returns out of the ELF section bytes, so nothing here references ef after this
+/// returns). Shared by CheckControlCodesCommon.hpp's own runCheckControlCodes() and
+/// CheckControlCodesShuffle's runCheckControlCodesShuffle() -- see the latter for the "shuffle a
+/// real kernel's instructions and re-verify correct-cc's repair" test this same compile step feeds.
+struct CompiledCC {
+    CuAsm::CuSMVersion arch;
+    std::vector<CuAsm::Tools::KernelControlCodes> kernels;
+    std::map<std::string, std::vector<CuAsm::Tools::DecodedInstruction>> decodedByKernel;
+};
+
 /**
- * @brief Runs the CheckControlCodes round trip for one (kernel, architecture) pair: compiles the
- *        kernel's .cu fixture (shared with CheckDisasm, under TestData/CheckDisasm/<kernel>) with
- *        nvcc, decodes every resulting kernel function's real ptxas-scheduled control codes via
- *        ccCommon.hpp's decodeInstructions() (Reports/tasks.md Phase 2), and runs hazard-based
- *        verifyControlCodes() (Phase 3) against each one. Any intermediate cubin left over from a
- *        previous run is cleared before this run starts.
- * @param kernelName Name of the kernel/subdirectory under TestData/CheckDisasm; also the base
- *        name of the .cu fixture.
+ * @brief Compiles a kernel's .cu fixture (shared with CheckDisasm, under
+ *        TestData/CheckDisasm/<kernel>) with nvcc and decodes every resulting kernel function's
+ *        real ptxas-scheduled control codes via ccCommon.hpp's decodeInstructions() (Reports/
+ *        tasks.md Phase 2) -- the compile+load+decode step every CheckControlCodes*-family test
+ *        needs before it can run its own check. Any intermediate cubin left over from a previous
+ *        run is cleared before this run starts.
+ * @param kernelName Name of the kernel/subdirectory under TestData/CheckDisasm; also the base name
+ *        of the .cu fixture.
  * @param arch Target SM architecture, e.g. "sm_75".
  * @param minArchSM Minimum numeric SM version (e.g. 80) the kernel's instructions require,
- *        mirroring CheckDisasmCommon.hpp's runCheckDisasm() parameter of the same name -- if
- *        arch's numeric SM version is lower, the round trip is skipped and this automatically
- *        passes. 0 (the default) means no minimum.
- * @return true if every kernel function the fixture produces decodes without error and verifies
- *         with CheckStatus::Verified, or if the check was skipped because arch is below
- *         minArchSM; false on any compile/load/decode error or a reported hazard violation.
+ *        mirroring CheckDisasmCommon.hpp's runCheckDisasm() parameter of the same name -- if arch's
+ *        numeric SM version is lower, this returns std::nullopt rather than compiling at all.
+ * @return The compiled/decoded result, or std::nullopt if skipped because arch is below minArchSM.
+ * @throws CuAsm::CalledProcessError if nvcc fails. @throws std::runtime_error on a load/decode
+ *         failure (bad cubin, unsupported SM version, no ".text.<kernel>" sections). @throws
+ *         std::out_of_range if decodeInstructions() hits an uncurated InsKey.
  **/
-inline bool runCheckControlCodes(const std::string& kernelName, const std::string& arch, int minArchSM = 0) {
+inline std::optional<CompiledCC> compileAndDecodeCC(const std::string& kernelName, const std::string& arch, int minArchSM = 0) {
     if (minArchSM > 0 && smArchNumberCC(arch) < minArchSM) {
-        std::cout << "[SKIP] CheckControlCodes " << kernelName << " (" << arch << "): requires sm_" << minArchSM
-                  << " or newer\n";
-        return true;
+        return std::nullopt;
     }
 
     const std::string dir = std::string(CUASM_TESTDATA_DIR) + "/CheckDisasm/" + kernelName;
@@ -82,35 +94,59 @@ inline bool runCheckControlCodes(const std::string& kernelName, const std::strin
     const std::string cubinFile = dir + "/" + kernelName + "." + arch + ".cc.cubin";
 
     removeQuietCC(cubinFile);
+    CuAsm::checkOutput({"nvcc", cuFile, "-arch=" + arch, "-cubin", "-o", cubinFile}, true);
 
+    ELFIO::elfio ef;
+    if (!ef.load(cubinFile)) {
+        throw std::runtime_error("failed to load cubin \"" + cubinFile + "\" via ELFIO");
+    }
+
+    const auto sm = CuAsm::Tools::detectArch(ef);
+    if (!sm) {
+        throw std::runtime_error("cubin \"" + cubinFile + "\" has an unsupported/undetected SM version");
+    }
+
+    std::vector<CuAsm::Tools::KernelControlCodes> kernels = CuAsm::Tools::loadControlCodes(ef, *sm);
+    if (kernels.empty()) {
+        throw std::runtime_error("no \".text.<kernel>\" sections found in \"" + cubinFile + "\"");
+    }
+    std::map<std::string, std::vector<CuAsm::Tools::DecodedInstruction>> decodedByKernel =
+        CuAsm::Tools::decodeInstructions(cubinFile, kernels, *sm);
+    // Aggregate-initialized directly (rather than via a default-constructed CompiledCC result;)
+    // since CuSMVersion has no default constructor -- see its own doc.
+    return CompiledCC{*sm, std::move(kernels), std::move(decodedByKernel)};
+}
+
+/**
+ * @brief Runs the CheckControlCodes round trip for one (kernel, architecture) pair:
+ *        compileAndDecodeCC() plus hazard-based verifyControlCodes() (Reports/tasks.md Phase 3)
+ *        against every kernel function found.
+ * @param kernelName Name of the kernel/subdirectory under TestData/CheckDisasm; also the base
+ *        name of the .cu fixture.
+ * @param arch Target SM architecture, e.g. "sm_75".
+ * @param minArchSM Minimum numeric SM version (e.g. 80) the kernel's instructions require -- if
+ *        arch's numeric SM version is lower, the round trip is skipped and this automatically
+ *        passes. 0 (the default) means no minimum.
+ * @return true if every kernel function the fixture produces decodes without error and verifies
+ *         with CheckStatus::Verified, or if the check was skipped because arch is below
+ *         minArchSM; false on any compile/load/decode error or a reported hazard violation.
+ **/
+inline bool runCheckControlCodes(const std::string& kernelName, const std::string& arch, int minArchSM = 0) {
     bool passed = false;
     std::string failureReason;
 
     try {
-        CuAsm::checkOutput({"nvcc", cuFile, "-arch=" + arch, "-cubin", "-o", cubinFile}, true);
-
-        ELFIO::elfio ef;
-        if (!ef.load(cubinFile)) {
-            throw std::runtime_error("failed to load cubin \"" + cubinFile + "\" via ELFIO");
+        const std::optional<CompiledCC> compiled = compileAndDecodeCC(kernelName, arch, minArchSM);
+        if (!compiled) {
+            std::cout << "[SKIP] CheckControlCodes " << kernelName << " (" << arch << "): requires sm_" << minArchSM
+                      << " or newer\n";
+            return true;
         }
-
-        const auto sm = CuAsm::Tools::detectArch(ef);
-        if (!sm) {
-            throw std::runtime_error("cubin \"" + cubinFile + "\" has an unsupported/undetected SM version");
-        }
-
-        const std::vector<CuAsm::Tools::KernelControlCodes> kernels = CuAsm::Tools::loadControlCodes(ef, *sm);
-        if (kernels.empty()) {
-            throw std::runtime_error("no \".text.<kernel>\" sections found in \"" + cubinFile + "\"");
-        }
-
-        const std::map<std::string, std::vector<CuAsm::Tools::DecodedInstruction>> decodedByKernel =
-            CuAsm::Tools::decodeInstructions(cubinFile, kernels, *sm);
 
         std::size_t totalInstrs = 0;
-        for (const CuAsm::Tools::KernelControlCodes& kcc : kernels) {
+        for (const CuAsm::Tools::KernelControlCodes& kcc : compiled->kernels) {
             const CuAsm::Tools::ControlCodeCheckResult result =
-                CuAsm::Tools::verifyControlCodes(decodedByKernel.at(kcc.kernelName), *sm);
+                CuAsm::Tools::verifyControlCodes(compiled->decodedByKernel.at(kcc.kernelName), compiled->arch);
             totalInstrs += kcc.ctrlCodeList.size();
             if (result.status != CuAsm::Tools::CheckStatus::Verified) {
                 std::ostringstream oss;
@@ -125,7 +161,7 @@ inline bool runCheckControlCodes(const std::string& kernelName, const std::strin
         }
 
         passed = true;
-        std::cout << "[PASS] CheckControlCodes " << kernelName << " (" << arch << "): " << kernels.size()
+        std::cout << "[PASS] CheckControlCodes " << kernelName << " (" << arch << "): " << compiled->kernels.size()
                   << " kernel(s), " << totalInstrs << " instruction(s) all verified clean\n";
     } catch (const CuAsm::CalledProcessError& e) {
         failureReason = std::string(e.what()) + ": " + e.output();

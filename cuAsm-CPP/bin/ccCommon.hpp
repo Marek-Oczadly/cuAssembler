@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <map>
 #include <optional>
+#include <set>
 #include <span>
 #include <sstream>
 #include <stdexcept>
@@ -331,6 +332,154 @@ inline bool isSentinelRegister(RegisterSpace space, int number) {
     return false;
 }
 
+/// How a control-flow instruction's guard predicate resolves statically, for CFG-successor
+/// purposes (see computeControlFlowSuccessors()): "PT"/no explicit guard is always taken,
+/// "@!PT" is a compiled-in-but-dead branch that never taken, and a real predicate register is a
+/// genuine runtime condition -- either outcome must be treated as reachable.
+enum class GuardKind {
+    AlwaysTrue,
+    AlwaysFalse,
+    Conditional,
+};
+
+/**
+ * @brief Classifies an instruction's guard predicate as always-taken, never-taken, or a genuine
+ *        runtime condition, for control-flow-successor purposes -- distinct from
+ *        isSentinelRegister()'s register-file-hazard-tracking concern, since here the negation bit
+ *        parsePred() folds into "register + 8" (isSentinelRegister()/registerAccessesOf() mask it
+ *        away because @P.Guard and @!P.Guard are the same *register* dependency either way) matters:
+ *        @PT and @!PT are both "PT" the register, but opposite constants.
+ * @param ins Instruction to classify.
+ * @return GuardKind::AlwaysTrue for an unguarded/"@PT" instruction, GuardKind::AlwaysFalse for
+ *         "@!PT", GuardKind::Conditional for a real predicate register (negated or not).
+ **/
+inline GuardKind guardKindOf(const DecodedInstruction& ins) {
+    const std::int64_t raw = ins.insVals[CuInsParser::PRED_VAL_IDX];
+    const bool negated = (raw & 0x8) != 0;
+    const int base = static_cast<int>(raw) & 0x7;
+    if (base != c_PredTrueIndex) {
+        return GuardKind::Conditional;
+    }
+    return negated ? GuardKind::AlwaysFalse : GuardKind::AlwaysTrue;
+}
+
+/**
+ * @brief Computes each instruction's real control-flow successor set within its own kernel, for
+ *        buildHazardGraph()'s reachability-aware dataflow (Reports/tasks.md Phase 5's dated
+ *        "CFG-blindness" note -- this is the fix for it): every instruction either falls through
+ *        to the next one, jumps to a resolved target, both (a conditional branch), or neither (a
+ *        guaranteed thread exit), following real SASS control-flow semantics rather than assuming
+ *        flat program order:
+ *        - `CALL`/`CAL`: always falls through only. A call always eventually returns to the next
+ *          instruction, and the callee's own body is a *different* kernel's/function's
+ *          KernelControlCodes entry entirely (never part of this vertex set), so its target --
+ *          however it's encoded -- is irrelevant to this CFG.
+ *        - `BSSY`/`SSY`/`PBK`/`PRET`: convergence-stack bookkeeping (reconvergence/break/return
+ *          target for the hardware's divergence stack), not an actual control transfer -- always
+ *          falls through, target operand unused.
+ *        - `EXIT`/`RET`: terminates this thread's path here (`RET` returns to a caller outside
+ *          this vertex set) -- never has an in-kernel jump target to resolve; contributes a
+ *          fallthrough successor only when its guard isn't GuardKind::AlwaysTrue (a guaranteed
+ *          exit has no successor at all).
+ *        - `BRA`/`JMP` with a resolvable immediate target (InsKey ends "_II", per
+ *          CuInsParser::specialTreatment()'s relative-offset encoding for addrFuncs): target
+ *          successor unless GuardKind::AlwaysFalse, fallthrough successor unless
+ *          GuardKind::AlwaysTrue -- i.e. both for a real conditional branch.
+ *        - Anything else that still needs a target it can't resolve (`BRX`/`BRXU`/`JMX`/`JMXU`
+ *          computed jump tables, or a `BRA`/`JMP` whose target isn't a plain immediate) is a hard
+ *          error, not a guess -- out of scope per this codebase's existing curation philosophy;
+ *          none of the 23 `Tests/CheckControlCodes` fixtures exercise one (confirmed by scanning
+ *          their real `cuobjdump -sass` output, Reports/tasks.md's dated note).
+ *        - Every other opcode: falls through only.
+ * @param instrs Kernel's decoded instructions, in program order.
+ * @return successors[i] is the list of instruction indices i's control flow can reach next
+ *         (0, 1, or 2 entries; order between fallthrough/target is not significant -- only the set
+ *         of successors matters to the reaching-definitions dataflow that consumes this).
+ * @throws std::runtime_error for an indirect/unresolvable branch target, or if a resolved target
+ *         address doesn't land exactly on one of instrs' own instruction addresses.
+ **/
+inline std::vector<std::vector<std::size_t>> computeControlFlowSuccessors(const std::vector<DecodedInstruction>& instrs) {
+    std::vector<std::vector<std::size_t>> succ(instrs.size());
+
+    std::map<std::uint64_t, std::size_t> addrToIndex;
+    std::optional<std::int64_t> instructionLength;
+    auto ensureAddrIndex = [&]() {
+        if (addrToIndex.empty()) {
+            for (std::size_t k = 0; k < instrs.size(); ++k) {
+                addrToIndex.emplace(instrs[k].address, k);
+            }
+        }
+    };
+    auto ensureInstructionLength = [&]() -> std::int64_t {
+        if (!instructionLength.has_value()) {
+            if (instrs.size() < 2) {
+                throw std::runtime_error(
+                    "computeControlFlowSuccessors: cannot resolve a branch target with fewer than 2 instructions "
+                    "to infer the instruction stride from");
+            }
+            const std::int64_t stride = static_cast<std::int64_t>(instrs[1].address) - static_cast<std::int64_t>(instrs[0].address);
+            if (stride <= 0) {
+                throw std::runtime_error("computeControlFlowSuccessors: non-positive inferred instruction stride");
+            }
+            instructionLength = stride;
+        }
+        return *instructionLength;
+    };
+
+    for (std::size_t i = 0; i < instrs.size(); ++i) {
+        const std::string opcode = instrs[i].insKey.substr(0, instrs[i].insKey.find('_'));
+        const bool hasFallthrough = i + 1 < instrs.size();
+
+        if (opcode == "CALL" || opcode == "CAL" || opcode == "BSSY" || opcode == "SSY" || opcode == "PBK" || opcode == "PRET") {
+            if (hasFallthrough) {
+                succ[i].push_back(i + 1);
+            }
+            continue;
+        }
+
+        if (opcode == "EXIT" || opcode == "RET") {
+            if (guardKindOf(instrs[i]) != GuardKind::AlwaysTrue && hasFallthrough) {
+                succ[i].push_back(i + 1);
+            }
+            continue;
+        }
+
+        if (opcode == "BRA" || opcode == "JMP" || opcode == "BRX" || opcode == "BRXU" || opcode == "JMX" || opcode == "JMXU") {
+            const bool resolvable =
+                (opcode == "BRA" || opcode == "JMP") && instrs[i].insKey.ends_with("_II") && !instrs[i].insVals.empty();
+            if (!resolvable) {
+                throw std::runtime_error("computeControlFlowSuccessors: instruction " + std::to_string(i) + " (\"" +
+                                          instrs[i].insKey +
+                                          "\") is an indirect/computed branch whose target cannot be statically "
+                                          "resolved -- out of scope, see this function's doc");
+            }
+
+            const GuardKind guard = guardKindOf(instrs[i]);
+            if (guard != GuardKind::AlwaysFalse) {
+                const std::int64_t len = ensureInstructionLength();
+                const std::int64_t target = instrs[i].insVals.back() + static_cast<std::int64_t>(instrs[i].address) + len;
+                ensureAddrIndex();
+                const auto it = target >= 0 ? addrToIndex.find(static_cast<std::uint64_t>(target)) : addrToIndex.end();
+                if (it == addrToIndex.end()) {
+                    throw std::runtime_error("computeControlFlowSuccessors: branch at instruction " + std::to_string(i) +
+                                              " targets an address outside this kernel's instruction list");
+                }
+                succ[i].push_back(it->second);
+            }
+            if (guard != GuardKind::AlwaysTrue && hasFallthrough) {
+                succ[i].push_back(i + 1);
+            }
+            continue;
+        }
+
+        if (hasFallthrough) {
+            succ[i].push_back(i + 1);
+        }
+    }
+
+    return succ;
+}
+
 /**
  * @brief Resolves one decoded instruction's real register-file accesses: its curated per-operand
  *        roles (OperandRoleTable, restricted to register-class OperandKinds via
@@ -406,77 +555,142 @@ struct HazardEdgeProperties {
 using HazardGraph = boost::adjacency_list<boost::vecS, boost::vecS, boost::bidirectionalS, boost::no_property, HazardEdgeProperties>;
 
 /**
- * @brief Builds the RAW/WAW/WAR hazard graph for one kernel's decoded instructions: a standard
- *        def-use-chain walk (as used for compiler dependence analysis/instruction scheduling
- *        legality, not a naive O(n^2) all-pairs scan) over each register's access history --
- *        every register's dependencies are fully captured by an edge from its most recent writer
- *        to each subsequent accessor (RAW into the next reader, WAW into the next writer) and an
- *        edge from every reader since that writer into the next writer (WAR); older writers'
- *        hazards are already transitively subsumed by the most recent writer's, so they need no
- *        edge of their own.
+ * @brief Builds the RAW/WAW/WAR hazard graph for one kernel's decoded instructions: a
+ *        reaching-definitions/reaching-reads dataflow analysis over the kernel's real,
+ *        *forward-only* control-flow graph (computeControlFlowSuccessors(), with any backward
+ *        edge dropped -- see below), not a flat program-order scan -- an edge p->c exists only
+ *        when some real per-thread execution path can actually reach c from p with no intervening
+ *        same-register write between them, mirroring standard compiler dependence-analysis/
+ *        instruction-scheduling-legality construction.
  *
- *        KNOWN LIMITATION (found via Tests/CheckControlCodes fixtures, 2026-08-28, deliberately
- *        not yet fixed -- see Reports/tasks.md Phase 5's dated note for the full writeup and the
- *        two confirmed repro kernels): this walk treats instrs as one flat program-order sequence
- *        with no basic-block/control-flow awareness -- it has no notion of branches at all, so it
- *        links every register access to whatever the *previous* accessor in raw index order was,
- *        even across a divergent, BSSY/BSYNC-bounded region where multiple mutually-exclusive
- *        branch legs each access the same register and reconverge at a shared label. That produces
- *        a spurious edge between two accesses that can never actually execute on the same thread's
- *        path -- confirmed to cause real false-positive violations (simulateAndVerify() correctly
- *        finds real, working ptxas control codes don't protect a dependency that isn't real). A
- *        correct fix needs branch-target decoding + basic-block construction + reachability-aware
- *        dataflow analysis layered on top of this function, not a change to this function's own
- *        per-register walk.
+ *        FIXED 2026-08-30 (was Reports/tasks.md Phase 5's dated "CFG-blindness" gap, confirmed via
+ *        Tests/CheckControlCodes fixtures 2026-08-28): the previous version linked every register
+ *        access to whatever the *previous* accessor in raw index order was, with no notion of
+ *        branches at all -- unsound across a divergent, BSSY/BSYNC-bounded region where multiple
+ *        mutually-exclusive branch legs each access the same register and reconverge at a shared
+ *        label, since it produced a spurious edge between two accesses that can never actually
+ *        execute on the same thread's path (simulateAndVerify() then correctly found real,
+ *        working ptxas control codes don't protect a dependency that isn't real). This version's
+ *        edges are per-real-path reachability instead: for each register, forward dataflow over
+ *        computeControlFlowSuccessors()'s CFG tracks, at the start of every instruction, the *set*
+ *        of writers (respectively: readers since the most recent possible writer) that can reach
+ *        that point along some path without being killed by an intervening write -- generalizing
+ *        the old single "last writer"/"readers since write" scalars to sets that merge (union) at
+ *        every CFG join point, which is exactly what makes mutually-exclusive branch legs stop
+ *        interfering: two writers on sibling legs never appear in the same instruction's reaching
+ *        set unless a real path can reach one from the other. A write kills all pending reaching
+ *        writers/readers for its register at that instruction (its own write becomes the new sole
+ *        reaching writer, with no readers yet) -- the same "reset" semantics the old per-register
+ *        history had, just applied per-CFG-node instead of per-linear-index.
+ *
+ *        Backward edges (a branch whose target index is <= its own index -- i.e. a real loop's
+ *        back-edge, confirmed distinct from the forward-only sibling-reconvergence case: an
+ *        earlier version of this fix propagated across *every* CFG edge including these, which
+ *        correctly found genuine loop-carried WAW/RAW/WAR self-edges on `Tests/CheckControlCodes`
+ *        kernels with real loops -- `SharedMemory`/`MatrixMultiply`/`LocalMemorySpill` -- but
+ *        simulateAndVerify() only ever walks instrs *once*, top to bottom, so it has no way to
+ *        check an edge whose "producer" is later in program order than its own "consumer": by the
+ *        time the simulated scoreboard state reaches the producer's index, the consumer's check
+ *        already ran. That is a second, genuinely different problem from CFG-blindness (checking a
+ *        loop-carried hazard needs simulateAndVerify() itself to model at least one virtual repeat
+ *        of the loop body, not just a better hazard graph) -- out of scope here, and not a
+ *        regression, since the *old* flat linear-index scan could never produce a backward edge
+ *        either (its "last writer so far" state is by construction always an earlier index than
+ *        the instruction currently being processed). So: only a strictly-forward CFG edge
+ *        (successor index > predecessor index) is followed by this dataflow at all, which as a
+ *        pleasant side effect also makes the reaching sets a plain topological (index-ascending)
+ *        one-pass computation -- no fixed-point iteration needed, since every predecessor a node
+ *        can have (post-filtering) is guaranteed already finalized by the time that node is
+ *        reached.
  * @param instrs Kernel's decoded instructions, in program order.
  * @return The hazard graph: instrs.size() vertices (vertex i == instrs[i]), one edge per real
- *         RAW/WAW/WAR dependency found.
+ *         RAW/WAW/WAR dependency found along a forward execution path.
+ * @throws std::runtime_error See computeControlFlowSuccessors().
  **/
 inline HazardGraph buildHazardGraph(const std::vector<DecodedInstruction>& instrs) {
     HazardGraph graph(instrs.size());
+    if (instrs.empty()) {
+        return graph;
+    }
 
-    struct RegHistory {
-        std::optional<std::size_t> lastWriter;
-        std::vector<std::size_t> readersSinceWrite;
-    };
-    std::map<std::pair<RegisterSpace, int>, RegHistory> history;
-
+    const std::vector<std::vector<std::size_t>> succ = computeControlFlowSuccessors(instrs);
+    std::vector<std::vector<std::size_t>> pred(instrs.size());
     for (std::size_t i = 0; i < instrs.size(); ++i) {
-        const std::vector<RegisterAccess> accesses = registerAccessesOf(instrs[i]);
+        for (const std::size_t s : succ[i]) {
+            // Forward-only: see this function's doc for why a backward (loop) edge is
+            // deliberately excluded from the reaching-definitions dataflow below.
+            if (s > i) {
+                pred[s].push_back(i);
+            }
+        }
+    }
 
-        // Pass 1 (reads, including the read half of a READ_WRITE access): RAW edge from the
-        // register's current writer, if any, then record i as a reader of it.
-        for (const RegisterAccess& acc : accesses) {
-            if (acc.mode == AccessMode::WRITE) {
-                continue;
-            }
-            RegHistory& h = history[std::make_pair(acc.space, acc.number)];
-            if (h.lastWriter.has_value() && *h.lastWriter != i) {
-                boost::add_edge(*h.lastWriter, i, HazardEdgeProperties{HazardType::RAW, acc.space, acc.number}, graph);
-            }
-            h.readersSinceWrite.push_back(i);
+    std::vector<std::vector<RegisterAccess>> accessesOf(instrs.size());
+    for (std::size_t i = 0; i < instrs.size(); ++i) {
+        accessesOf[i] = registerAccessesOf(instrs[i]);
+    }
+
+    using RegKey = std::pair<RegisterSpace, int>;
+    using RegSetMap = std::map<RegKey, std::set<std::size_t>>;
+
+    auto unionInto = [](RegSetMap& dst, const RegSetMap& src) {
+        for (const auto& [key, srcSet] : src) {
+            dst[key].insert(srcSet.begin(), srcSet.end());
+        }
+    };
+
+    std::vector<RegSetMap> writeIn(instrs.size()), writeOut(instrs.size());
+    std::vector<RegSetMap> readIn(instrs.size()), readOut(instrs.size());
+
+    // A single index-ascending pass suffices: pred[i] only ever contains indices < i (forward
+    // edges only, see above), so every predecessor's writeOut/readOut is already final by the
+    // time instruction i is processed -- this is a topological-order walk, not an approximation.
+    for (std::size_t i = 0; i < instrs.size(); ++i) {
+        for (const std::size_t p : pred[i]) {
+            unionInto(writeIn[i], writeOut[p]);
+            unionInto(readIn[i], readOut[p]);
         }
 
-        // Pass 2 (writes, including the write half of a READ_WRITE access): WAW edge from the
-        // register's current writer, WAR edge from every reader recorded since that writer (i's
-        // own read of the same register, just recorded above, is excluded -- reading your own
-        // about-to-be-overwritten operand within one instruction is not a real anti-dependency),
-        // then this instruction becomes the register's new writer with no readers yet.
-        for (const RegisterAccess& acc : accesses) {
-            if (acc.mode == AccessMode::READ) {
-                continue;
+        RegSetMap newWriteOut = writeIn[i];
+        RegSetMap newReadOut = readIn[i];
+        for (const RegisterAccess& acc : accessesOf[i]) {
+            const RegKey key{acc.space, acc.number};
+            if (acc.mode == AccessMode::WRITE || acc.mode == AccessMode::READ_WRITE) {
+                // This instruction's write is now the sole reaching writer for key, and resets
+                // the reaching-reads-since-write set to empty (mirroring the old per-register
+                // history's "h.readersSinceWrite.clear()" on every write).
+                newWriteOut[key] = {i};
+                newReadOut[key].clear();
+            } else {
+                newReadOut[key].insert(i);
             }
-            RegHistory& h = history[std::make_pair(acc.space, acc.number)];
-            if (h.lastWriter.has_value() && *h.lastWriter != i) {
-                boost::add_edge(*h.lastWriter, i, HazardEdgeProperties{HazardType::WAW, acc.space, acc.number}, graph);
-            }
-            for (const std::size_t reader : h.readersSinceWrite) {
-                if (reader != i) {
-                    boost::add_edge(reader, i, HazardEdgeProperties{HazardType::WAR, acc.space, acc.number}, graph);
+        }
+        writeOut[i] = std::move(newWriteOut);
+        readOut[i] = std::move(newReadOut);
+    }
+
+    for (std::size_t i = 0; i < instrs.size(); ++i) {
+        for (const RegisterAccess& acc : accessesOf[i]) {
+            const RegKey key{acc.space, acc.number};
+            if (acc.mode == AccessMode::READ || acc.mode == AccessMode::READ_WRITE) {
+                if (const auto it = writeIn[i].find(key); it != writeIn[i].end()) {
+                    for (const std::size_t producer : it->second) {
+                        boost::add_edge(producer, i, HazardEdgeProperties{HazardType::RAW, acc.space, acc.number}, graph);
+                    }
                 }
             }
-            h.lastWriter = i;
-            h.readersSinceWrite.clear();
+            if (acc.mode == AccessMode::WRITE || acc.mode == AccessMode::READ_WRITE) {
+                if (const auto it = writeIn[i].find(key); it != writeIn[i].end()) {
+                    for (const std::size_t producer : it->second) {
+                        boost::add_edge(producer, i, HazardEdgeProperties{HazardType::WAW, acc.space, acc.number}, graph);
+                    }
+                }
+                if (const auto it = readIn[i].find(key); it != readIn[i].end()) {
+                    for (const std::size_t reader : it->second) {
+                        boost::add_edge(reader, i, HazardEdgeProperties{HazardType::WAR, acc.space, acc.number}, graph);
+                    }
+                }
+            }
         }
     }
 
