@@ -17,6 +17,10 @@ add_executable(test_CubinFile test_CubinFile.cpp)
 target_link_libraries(test_CubinFile PRIVATE CuAsm)
 add_test(NAME test_CubinFile COMMAND test_CubinFile)
 
+add_executable(test_ParsedCubin test_ParsedCubin.cpp)
+target_link_libraries(test_ParsedCubin PRIVATE CuAsm elfio::elfio Boost::graph)
+add_test(NAME test_ParsedCubin COMMAND test_ParsedCubin)
+
 add_executable(test_elfSection test_elfSection.cpp)
 target_link_libraries(test_elfSection PRIVATE CuAsm elfio::elfio)
 add_test(NAME test_elfSection COMMAND test_elfSection)
