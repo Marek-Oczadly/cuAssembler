@@ -122,12 +122,14 @@ int main() {
 
     // ---- collectBarrierIntervals() ----
     {
-        // 0: VARIABLE:WRITE producer on R4.
+        // 0: VARIABLE:WRITE producer on R4, genuinely adjacent to its nearest consumer with zero
+        //    natural stall margin -- the one case that can't be discharged by natural spacing
+        //    alone (Reports/correct-cc-overconservative-barrier-intervals.md).
         // 1: reads R4 (RAW, barrier-eligible) -- first consumer.
         // 2: reads R4 again -- must NOT create a second interval, only widen/ignore since 1 < 2.
         const std::vector<DecodedInstruction> instrs = {
             makeIns("LDG_R_ARI", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
-                    CuControlCode::mergeCode(0, 7, 0, 1, 2)),
+                    CuControlCode::mergeCode(0, 7, 0, 1, /*stall=*/0)),
             makeIns("MOV_R_R", {c_Pt, 5, 4}, {{OperandKind::GPR, AccessMode::WRITE}, {OperandKind::GPR, AccessMode::READ}}, c_Fixed,
                     CuControlCode::mergeCode(0, 7, 7, 1, 1)),
             makeIns("MOV_R_R", {c_Pt, 6, 4}, {{OperandKind::GPR, AccessMode::WRITE}, {OperandKind::GPR, AccessMode::READ}}, c_Fixed,
@@ -151,6 +153,38 @@ int main() {
         };
         const auto graph = buildHazardGraph(instrs);
         t.check("a VARIABLE producer's non-barrier-protected (WAR-only) access yields no barrier interval",
+                collectBarrierIntervals(instrs, graph).empty());
+    }
+    {
+        // Regression for Reports/correct-cc-overconservative-barrier-intervals.md: a VARIABLE
+        // producer whose *nearest* barrier-eligible consumer is not immediately adjacent already
+        // has enough natural instruction spacing to be safe under this codebase's own
+        // FIXED-latency approximation (simulateAndVerify()'s doc) -- it must get NO interval at
+        // all, exactly like the real GEMM kernel's LDS.U producers that ptxas left unbarriered.
+        const std::vector<DecodedInstruction> instrs = {
+            makeIns("LDS_R_ARI", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
+                    CuControlCode::mergeCode(0, 7, 7, 1, /*stall=*/1)),
+            makeIns("MOV_R_II", {c_Pt, 5}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+            makeIns("MOV_R_R", {c_Pt, 6, 4}, {{OperandKind::GPR, AccessMode::WRITE}, {OperandKind::GPR, AccessMode::READ}}, c_Fixed,
+                    CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+        };
+        const auto graph = buildHazardGraph(instrs);
+        t.check("a VARIABLE producer with a non-adjacent nearest consumer needs no barrier interval at all",
+                collectBarrierIntervals(instrs, graph).empty());
+    }
+    {
+        // A VARIABLE producer immediately adjacent to its nearest consumer, but already carrying
+        // a nonzero natural stall count, is *also* safe -- adjacency alone isn't the trigger, the
+        // exact same "adjacent AND zero-stall" pair simulateAndVerify()'s FIXED-latency fallback
+        // checks is.
+        const std::vector<DecodedInstruction> instrs = {
+            makeIns("LDS_R_ARI", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
+                    CuControlCode::mergeCode(0, 7, 7, 1, /*stall=*/1)),
+            makeIns("MOV_R_R", {c_Pt, 5, 4}, {{OperandKind::GPR, AccessMode::WRITE}, {OperandKind::GPR, AccessMode::READ}}, c_Fixed,
+                    CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+        };
+        const auto graph = buildHazardGraph(instrs);
+        t.check("an adjacent VARIABLE producer with a nonzero natural stall count needs no barrier interval either",
                 collectBarrierIntervals(instrs, graph).empty());
     }
 
@@ -332,11 +366,11 @@ int main() {
         // 3: consumer of B (RAW) -- B's interval is [2, 3), never overlapping A's.
         const std::vector<DecodedInstruction> decoded = {
             makeIns("LDG_R_ARI", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
-                    CuControlCode::mergeCode(0, 7, 0, 1, 2)),
+                    CuControlCode::mergeCode(0, 7, 0, 1, /*stall=*/0)),
             makeIns("MOV_R_R", {c_Pt, 5, 4}, {{OperandKind::GPR, AccessMode::WRITE}, {OperandKind::GPR, AccessMode::READ}}, c_Fixed,
                     CuControlCode::mergeCode(0, 7, 7, 1, 1)),
             makeIns("LDG_R_ARI", {c_Pt, 6}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
-                    CuControlCode::mergeCode(0, 7, 0, 1, 2)),
+                    CuControlCode::mergeCode(0, 7, 0, 1, /*stall=*/0)),
             makeIns("MOV_R_R", {c_Pt, 7, 6}, {{OperandKind::GPR, AccessMode::WRITE}, {OperandKind::GPR, AccessMode::READ}}, c_Fixed,
                     CuControlCode::mergeCode(0, 7, 7, 1, 1)),
         };
@@ -358,48 +392,65 @@ int main() {
                                                                       CheckStatus::Verified);
     }
 
-    // ---- correctControlCodes(): two overlapping VARIABLE producers get distinct slots, end to end ----
+    // ---- correctControlCodes(): two *genuinely* adjacent-with-zero-stall VARIABLE producers,
+    // back to back, still get distinct slots, end to end (assignBarrierSlots() is exercised
+    // directly for the general overlapping-intervals case above; this checks the same allocator
+    // is actually wired up correctly through collectBarrierIntervals()/correctControlCodes()) ----
     {
-        // 0: VARIABLE:WRITE producer A on R4.
-        // 1: VARIABLE:WRITE producer B on R6 -- issued before A's own consumer, so both are live
-        //    simultaneously.
-        // 2: consumer reading both R4 and R6 -- A's interval [0, 2) and B's interval [1, 2) overlap.
+        // 0: VARIABLE:WRITE producer A on R4, immediately consumed next -- genuinely adjacent,
+        //    zero-stall, so A needs a real interval [0, 1).
+        // 1: consumer of A (RAW) *and* itself VARIABLE:WRITE producer B on R6, immediately
+        //    consumed next -- B needs its own real interval [1, 2). A's interval only touches
+        //    B's (freed the instant A is retired, per BarrierInterval's own doc), so this alone
+        //    doesn't force distinct slots -- see the assignBarrierSlots() unit tests above for the
+        //    genuinely-overlapping case at that layer.
+        // 2: consumer of B (RAW).
         const std::vector<DecodedInstruction> decoded = {
             makeIns("LDG_R_ARI", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
-                    CuControlCode::mergeCode(0, 7, 0, 1, 2)),
-            makeIns("LDG_R_ARI", {c_Pt, 6}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
-                    CuControlCode::mergeCode(0, 7, 0, 1, 2)),
-            makeIns("IADD3_R_R_R_R", {c_Pt, 8, 4, 6, 255},
-                    {{OperandKind::GPR, AccessMode::WRITE}, {OperandKind::GPR, AccessMode::READ}, {OperandKind::GPR, AccessMode::READ},
-                     {OperandKind::GPR, AccessMode::READ}},
-                    c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+                    CuControlCode::mergeCode(0, 7, 0, 1, /*stall=*/0)),
+            makeIns("LDG_R_R", {c_Pt, 6, 4}, {{OperandKind::GPR, AccessMode::WRITE}, {OperandKind::GPR, AccessMode::READ}},
+                    c_VariableWrite, CuControlCode::mergeCode(0, 7, 0, 1, /*stall=*/0)),
+            makeIns("MOV_R_R", {c_Pt, 7, 6}, {{OperandKind::GPR, AccessMode::WRITE}, {OperandKind::GPR, AccessMode::READ}}, c_Fixed,
+                    CuControlCode::mergeCode(0, 7, 7, 1, 1)),
         };
         KernelControlCodes kcc = makeKcc(decoded);
         const ControlCodeCheckResult result = correctControlCodes(kcc, decoded, CuAsm::CuSMVersion(75));
-        t.check("correctControlCodes() reports Corrected for two overlapping VARIABLE producers", result.status == CheckStatus::Corrected);
+        t.check("correctControlCodes() reports Corrected for two back-to-back adjacent VARIABLE producers",
+                result.status == CheckStatus::Corrected);
 
         const CuControlCode producerA(kcc.ctrlCodeList[0]);
         const CuControlCode producerB(kcc.ctrlCodeList[1]);
-        t.check("two simultaneously-live producers are assigned distinct physical slots",
-                producerA.getWriteSB() != -1 && producerB.getWriteSB() != -1 && producerA.getWriteSB() != producerB.getWriteSB());
+        t.check("both genuinely-adjacent producers were actually assigned real scoreboard slots",
+                producerA.getWriteSB() != -1 && producerB.getWriteSB() != -1);
 
         std::vector<DecodedInstruction> reChecked = decoded;
         for (std::size_t i = 0; i < reChecked.size(); ++i) {
             reChecked[i].ctrlCode = CuControlCode(kcc.ctrlCodeList[i]);
         }
-        t.check("the distinct-slot correction re-verifies clean", verifyControlCodes(reChecked, CuAsm::CuSMVersion(75)).status ==
-                                                                        CheckStatus::Verified);
+        t.check("the back-to-back correction re-verifies clean", verifyControlCodes(reChecked, CuAsm::CuSMVersion(75)).status ==
+                                                                       CheckStatus::Verified);
     }
 
-    // ---- correctControlCodes(): unrepairable (>6 simultaneously-live VARIABLE producers) ----
+    // ---- correctControlCodes(): regression for Reports/correct-cc-overconservative-barrier-
+    // intervals.md -- many independent VARIABLE producers whose nearest consumer is far away (not
+    // adjacent) must NOT be reported Unrepairable just because a naive count of barrier-eligible
+    // producers exceeds the 6 physical slots. This is the exact shape of the bug: a real,
+    // ptxas-compiled GEMM kernel with 28 such producers, all safely closed by natural instruction
+    // spacing and needing zero scoreboard slots, was previously rejected as Unrepairable. ----
     {
-        // Instructions 0..6: seven independent VARIABLE:WRITE producers on distinct registers.
-        // Instruction 7: a single consumer reading all seven -- forces all seven barrier
-        // intervals to overlap (each is [i, 7]), needing 7 distinct scoreboard slots.
+        // Instructions 0..6: seven independent VARIABLE:WRITE producers on distinct registers,
+        // each with enough natural spacing (padding instructions) before its own use that none is
+        // adjacent to it. Old (buggy) behavior: all seven got real intervals overlapping at the
+        // shared final consumer, exceeding the 6 physical slots -- Unrepairable. Fixed behavior:
+        // none of them are adjacent to their nearest consumer, so none need a slot at all.
         std::vector<DecodedInstruction> decoded;
         for (int i = 0; i < 7; ++i) {
             decoded.push_back(makeIns("LDG_R_ARI", {c_Pt, i}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
-                                       CuControlCode::mergeCode(0, 7, /*writebar=*/0, 1, 2)));
+                                       CuControlCode::mergeCode(0, 7, /*writebar=*/0, 1, 1)));
+            // Padding instruction between each producer and the shared consumer below, so no
+            // producer's nearest (only) consumer is its immediately-following instruction.
+            decoded.push_back(
+                makeIns("NOP", {c_Pt}, {}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)));
         }
         std::vector<std::int64_t> consumerVals{c_Pt};
         std::vector<OperandRoleEntry> consumerRoles;
@@ -410,11 +461,19 @@ int main() {
         decoded.push_back(makeIns("BAR_R_R_R_R_R_R_R", consumerVals, consumerRoles, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)));
 
         KernelControlCodes kcc = makeKcc(decoded);
-        const std::vector<std::uint32_t> before = kcc.ctrlCodeList;
         const ControlCodeCheckResult result = correctControlCodes(kcc, decoded, CuAsm::CuSMVersion(75));
-        t.check("correctControlCodes() reports Unrepairable when more than 6 producers are simultaneously live",
-                result.status == CheckStatus::Unrepairable && !result.message.empty());
-        t.check("kcc.ctrlCodeList is left completely unchanged after an Unrepairable result", kcc.ctrlCodeList == before);
+        t.check("correctControlCodes() no longer reports Unrepairable for far-apart VARIABLE producers "
+                "that natural instruction spacing already closes",
+                result.status == CheckStatus::Corrected);
+        t.check("...and needs zero scoreboard slots, since none of them are genuinely adjacent to their consumer",
+                result.message.find("0/6") != std::string::npos);
+
+        std::vector<DecodedInstruction> reChecked = decoded;
+        for (std::size_t i = 0; i < reChecked.size(); ++i) {
+            reChecked[i].ctrlCode = CuControlCode(kcc.ctrlCodeList[i]);
+        }
+        t.check("the zero-slot correction re-verifies clean",
+                verifyControlCodes(reChecked, CuAsm::CuSMVersion(75)).status == CheckStatus::Verified);
     }
 
     return t.finish("test_ccCorrect");

@@ -1119,15 +1119,30 @@ struct BarrierInterval {
 
 /**
  * @brief Finds every VARIABLE-latency producer in instrs that actually needs a scoreboard barrier
- *        -- i.e. has at least one outgoing edge in graph that isBarrierEligible() closes for its
- *        own classification -- and computes its resulting BarrierInterval (Reports/tasks.md Phase
- *        4's "each barrier's lifetime... is an interval").
+ *        and computes its resulting BarrierInterval (Reports/tasks.md Phase 4's "each barrier's
+ *        lifetime... is an interval").
+ *
+ *        isBarrierEligible() alone is a per-*opcode* classification -- it says a producer's
+ *        access *could* be barrier-protected, not that this specific instance actually needs a
+ *        reserved slot. A real, working, ptxas-compiled schedule can (and does -- confirmed on a
+ *        real GEMM kernel, Reports/correct-cc-overconservative-barrier-intervals.md) leave a
+ *        VARIABLE-latency producer's barrier field completely unset when its first consumer
+ *        already sits far enough away in program order, exactly the same "natural instruction
+ *        spacing is close enough" judgment call this codebase already trusts ptxas to have made
+ *        for FIXED-latency producers (simulateAndVerify()'s own doc: "it only catches the
+ *        unconditionally-wrong case ... and treats every other ... edge as satisfied"). So a
+ *        producer's *nearest* barrier-eligible consumer only earns it a real interval (and
+ *        therefore a reserved physical slot) when that pair is genuinely adjacent with zero stall
+ *        margin between them -- the one case this codebase's existing conservative model can't
+ *        otherwise discharge. Every producer whose nearest consumer clears that bar by even one
+ *        instruction is treated as already safely closed by natural spacing, the same way a
+ *        FIXED-latency producer with that same gap already would be, and gets no interval at all.
  * @param instrs Kernel's decoded instructions, in program order.
  * @param graph Hazard graph for instrs, as returned by buildHazardGraph(instrs).
- * @return One BarrierInterval per producer that needs a barrier, ordered by producerIndex
- *         ascending -- required by assignBarrierSlots()'s greedy interval-coloring, which is only
- *         optimal (uses exactly the maximum simultaneous overlap) when intervals are processed in
- *         increasing start order.
+ * @return One BarrierInterval per producer that genuinely needs a reserved slot, ordered by
+ *         producerIndex ascending -- required by assignBarrierSlots()'s greedy interval-coloring,
+ *         which is only optimal (uses exactly the maximum simultaneous overlap) when intervals are
+ *         processed in increasing start order.
  **/
 inline std::vector<BarrierInterval> collectBarrierIntervals(const std::vector<DecodedInstruction>& instrs, const HazardGraph& graph) {
     std::map<std::size_t, BarrierInterval> needs;
@@ -1151,6 +1166,14 @@ inline std::vector<BarrierInterval> collectBarrierIntervals(const std::vector<De
     std::vector<BarrierInterval> result;
     result.reserve(needs.size());
     for (const auto& [producer, interval] : needs) {
+        // Mirror simulateAndVerify()'s own FIXED-latency fallback test: only an immediately-
+        // adjacent, zero-stall pair is unconditionally wrong. Anything else already has enough
+        // natural spacing to be considered safe, so it needs no reserved slot at all.
+        const bool adjacent = (interval.firstConsumerIndex == producer + 1);
+        const bool zeroStall = instrs[producer].ctrlCode.getStallCount() == 0;
+        if (!(adjacent && zeroStall)) {
+            continue;
+        }
         result.push_back(interval);
     }
     return result;
