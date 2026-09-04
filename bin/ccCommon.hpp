@@ -1097,6 +1097,51 @@ inline bool isBarrierEligible(const LatencyClassEntry& producerLatency, BarrierT
            *producerLatency.barrier == relevantAccess;
 }
 
+/**
+ * @brief Curated per-opcode minimum "safe margin" -- natural instruction distance to a producer's
+ *        nearest barrier-eligible consumer, plus the producer's own already-assigned stall count
+ *        -- below which collectBarrierIntervals() can't trust natural spacing alone to have closed
+ *        the hazard, and must allocate a real scoreboard interval instead. See
+ *        collectBarrierIntervals()'s own doc for the full "why margin instead of a real cycle
+ *        model" rationale.
+ *
+ *        THIS IS A PLACEHOLDER, not a real per-opcode cycle-latency model: nothing in this
+ *        codebase curates numeric latency data for any opcode (LatencyClassTable only curates the
+ *        boolean FIXED/VARIABLE classification -- see its own doc), so there is no principled way
+ *        to derive a true "safe after N cycles" threshold from first principles yet. A missing
+ *        entry falls back to margin 1 -- the original "only literal zero-margin adjacency is
+ *        unconditionally unsafe" rule collectBarrierIntervals() used before this table existed,
+ *        and still the right default for any opcode with no real evidence behind a larger number.
+ *
+ *        Entries below are seeded ONLY from this repo's own already-confirmed real,
+ *        ptxas-compiled, verify-cc-passing disassembly -- the same "confirmed by real disassembled
+ *        control codes" evidence bar LatencyClass.sm_75.txt's own citations already hold
+ *        themselves to -- never a guessed/typical cycle count. Each curated value is the *tightest*
+ *        real margin actually witnessed safe (not a padded-down guess in either direction), so it
+ *        stays exactly as permissive as the evidence allows: raising it would risk reintroducing
+ *        Reports/correct-cc-overconservative-barrier-intervals.md's false positive on the kernel
+ *        that motivated it; lowering it further would be an unfounded guess in the *unsafe*
+ *        direction. Revisit (tighten or add entries) only against new confirmed evidence, exactly
+ *        like LatencyClass.sm_75.txt's own curation policy.
+ * @param insKey Producer's instruction key (DecodedInstruction::insKey).
+ * @return The curated minimum safe margin for insKey, or 1 if uncurated.
+ **/
+inline std::uint32_t minSafeBarrierMargin(const std::string& insKey) {
+    static const std::map<std::string, std::uint32_t> table = {
+        // LDS_R_ARI (LDS.U/LDS.U.128 through a register+immediate address): Reports/
+        // gemm-tiled-repro.sass/.cu -- the real, ptxas-compiled, verify-cc-confirmed-correct
+        // kernel Reports/correct-cc-overconservative-barrier-intervals.md is about -- leaves
+        // several LDS_R_ARI instances completely unbarriered. The tightest is
+        // "LDS.U R16, [R0.X4+0x400] ;" at /*0290*/, first consumed by "FFMA R4, R16, R4, R19 ;"
+        // at /*0330*/: 9 natural instructions of spacing (0x0a0 bytes / 0x10 per instruction,
+        // minus the producer itself) plus the producer's own real stall count of 4 -- a
+        // witnessed-safe margin of 13.
+        {"LDS_R_ARI", 13},
+    };
+    const auto it = table.find(insKey);
+    return (it != table.end()) ? it->second : 1;
+}
+
 /// One VARIABLE-latency producer's scoreboard-slot occupancy interval, for barrier-id
 /// interval-coloring (see assignBarrierSlots()): the physical slot claimed when producerIndex
 /// issues must stay reserved for it until firstConsumerIndex, the *earliest* instruction with a
@@ -1132,11 +1177,15 @@ struct BarrierInterval {
  *        for FIXED-latency producers (simulateAndVerify()'s own doc: "it only catches the
  *        unconditionally-wrong case ... and treats every other ... edge as satisfied"). So a
  *        producer's *nearest* barrier-eligible consumer only earns it a real interval (and
- *        therefore a reserved physical slot) when that pair is genuinely adjacent with zero stall
- *        margin between them -- the one case this codebase's existing conservative model can't
- *        otherwise discharge. Every producer whose nearest consumer clears that bar by even one
- *        instruction is treated as already safely closed by natural spacing, the same way a
- *        FIXED-latency producer with that same gap already would be, and gets no interval at all.
+ *        therefore a reserved physical slot) when the *margin* between them -- natural instruction
+ *        distance plus the producer's own already-assigned stall count -- falls short of
+ *        minSafeBarrierMargin(producer's insKey). Every producer whose margin clears that bar is
+ *        treated as already safely closed by natural spacing, the same way a FIXED-latency
+ *        producer with that same margin already would be, and gets no interval at all. Unlike the
+ *        old literal-adjacency-only rule, a triggered interval here is not always exactly one
+ *        instruction wide -- an opcode curated with a minimum margin above 1 (see
+ *        minSafeBarrierMargin()) can still need protection several instructions out, which is what
+ *        lets two such producers' intervals genuinely overlap and need distinct slots again.
  * @param instrs Kernel's decoded instructions, in program order.
  * @param graph Hazard graph for instrs, as returned by buildHazardGraph(instrs).
  * @return One BarrierInterval per producer that genuinely needs a reserved slot, ordered by
@@ -1166,12 +1215,12 @@ inline std::vector<BarrierInterval> collectBarrierIntervals(const std::vector<De
     std::vector<BarrierInterval> result;
     result.reserve(needs.size());
     for (const auto& [producer, interval] : needs) {
-        // Mirror simulateAndVerify()'s own FIXED-latency fallback test: only an immediately-
-        // adjacent, zero-stall pair is unconditionally wrong. Anything else already has enough
-        // natural spacing to be considered safe, so it needs no reserved slot at all.
-        const bool adjacent = (interval.firstConsumerIndex == producer + 1);
-        const bool zeroStall = instrs[producer].ctrlCode.getStallCount() == 0;
-        if (!(adjacent && zeroStall)) {
+        // Margin = natural instruction distance to the nearest barrier-eligible consumer, plus
+        // the producer's own already-assigned stall count. firstConsumerIndex > producer always
+        // (buildHazardGraph() only ever creates forward edges), so this never underflows.
+        const std::uint32_t distance = static_cast<std::uint32_t>(interval.firstConsumerIndex - producer - 1);
+        const std::uint32_t margin = distance + instrs[producer].ctrlCode.getStallCount();
+        if (margin >= minSafeBarrierMargin(instrs[producer].insKey)) {
             continue;
         }
         result.push_back(interval);
