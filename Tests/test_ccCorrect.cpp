@@ -160,9 +160,11 @@ int main() {
         // producer whose *nearest* barrier-eligible consumer is not immediately adjacent already
         // has enough natural instruction spacing to be safe under this codebase's own
         // FIXED-latency approximation (simulateAndVerify()'s doc) -- it must get NO interval at
-        // all, exactly like the real GEMM kernel's LDS.U producers that ptxas left unbarriered.
+        // all. "UNCURATED_R_ARI" isn't a real opcode -- deliberately not one of
+        // minSafeBarrierMargin()'s curated keys, so this exercises the uncurated default margin
+        // of 1 in isolation, robust against that table growing new real entries later.
         const std::vector<DecodedInstruction> instrs = {
-            makeIns("LDS_R_ARI", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
+            makeIns("UNCURATED_R_ARI", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
                     CuControlCode::mergeCode(0, 7, 7, 1, /*stall=*/1)),
             makeIns("MOV_R_II", {c_Pt, 5}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
             makeIns("MOV_R_R", {c_Pt, 6, 4}, {{OperandKind::GPR, AccessMode::WRITE}, {OperandKind::GPR, AccessMode::READ}}, c_Fixed,
@@ -174,17 +176,56 @@ int main() {
     }
     {
         // A VARIABLE producer immediately adjacent to its nearest consumer, but already carrying
-        // a nonzero natural stall count, is *also* safe -- adjacency alone isn't the trigger, the
-        // exact same "adjacent AND zero-stall" pair simulateAndVerify()'s FIXED-latency fallback
-        // checks is.
+        // a nonzero natural stall count, is *also* safe under the uncurated default margin of 1 --
+        // adjacency alone isn't the trigger, the margin (distance + stall) clearing the threshold
+        // is. Same deliberately-fake "UNCURATED_R_ARI" opcode as above.
         const std::vector<DecodedInstruction> instrs = {
-            makeIns("LDS_R_ARI", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
+            makeIns("UNCURATED_R_ARI", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
                     CuControlCode::mergeCode(0, 7, 7, 1, /*stall=*/1)),
             makeIns("MOV_R_R", {c_Pt, 5, 4}, {{OperandKind::GPR, AccessMode::WRITE}, {OperandKind::GPR, AccessMode::READ}}, c_Fixed,
                     CuControlCode::mergeCode(0, 7, 7, 1, 1)),
         };
         const auto graph = buildHazardGraph(instrs);
         t.check("an adjacent VARIABLE producer with a nonzero natural stall count needs no barrier interval either",
+                collectBarrierIntervals(instrs, graph).empty());
+    }
+    {
+        // minSafeBarrierMargin() regression: LDS_R_ARI is curated with a minimum safe margin of
+        // 13 (Reports/gemm-tiled-repro.sass's own tightest witnessed-unbarriered LDS.U instance),
+        // well above the uncurated default of 1. A margin that would satisfy the *default*
+        // threshold (distance 3 + stall 1 = 4) must still be judged unsafe for this specific
+        // curated opcode, and still get a real interval.
+        const std::vector<DecodedInstruction> instrs = {
+            makeIns("LDS_R_ARI", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
+                    CuControlCode::mergeCode(0, 7, 0, 1, /*stall=*/1)),
+            makeIns("MOV_R_II", {c_Pt, 5}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+            makeIns("MOV_R_II", {c_Pt, 6}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+            makeIns("MOV_R_II", {c_Pt, 7}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+            makeIns("MOV_R_R", {c_Pt, 8, 4}, {{OperandKind::GPR, AccessMode::WRITE}, {OperandKind::GPR, AccessMode::READ}}, c_Fixed,
+                    CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+        };
+        const auto graph = buildHazardGraph(instrs);
+        const auto intervals = collectBarrierIntervals(instrs, graph);
+        t.check("a curated opcode below its own minimum safe margin still needs a real interval, "
+                "even past the uncurated default threshold",
+                intervals.size() == 1 && intervals[0].producerIndex == 0 && intervals[0].firstConsumerIndex == 4);
+    }
+    {
+        // Same shape, but with exactly margin 13 (distance 12 + stall 1) -- the tightest real
+        // margin Reports/gemm-tiled-repro.sass actually witnesses safe for LDS_R_ARI. This must
+        // stay interval-free, or this fix would reintroduce the reported false positive on that
+        // exact kernel.
+        std::vector<DecodedInstruction> instrs;
+        instrs.push_back(makeIns("LDS_R_ARI", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
+                                  CuControlCode::mergeCode(0, 7, 0, 1, /*stall=*/1)));
+        for (int i = 0; i < 12; ++i) {
+            instrs.push_back(makeIns("MOV_R_II", {c_Pt, 5}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed,
+                                      CuControlCode::mergeCode(0, 7, 7, 1, 1)));
+        }
+        instrs.push_back(makeIns("MOV_R_R", {c_Pt, 8, 4}, {{OperandKind::GPR, AccessMode::WRITE}, {OperandKind::GPR, AccessMode::READ}},
+                                  c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)));
+        const auto graph = buildHazardGraph(instrs);
+        t.check("a curated opcode exactly at its own minimum safe margin needs no interval",
                 collectBarrierIntervals(instrs, graph).empty());
     }
 
@@ -438,19 +479,22 @@ int main() {
     // ptxas-compiled GEMM kernel with 28 such producers, all safely closed by natural instruction
     // spacing and needing zero scoreboard slots, was previously rejected as Unrepairable. ----
     {
-        // Instructions 0..6: seven independent VARIABLE:WRITE producers on distinct registers,
-        // each with enough natural spacing (padding instructions) before its own use that none is
-        // adjacent to it. Old (buggy) behavior: all seven got real intervals overlapping at the
-        // shared final consumer, exceeding the 6 physical slots -- Unrepairable. Fixed behavior:
-        // none of them are adjacent to their nearest consumer, so none need a slot at all.
+        // Instructions 0..6: seven independent LDS_R_ARI (curated minSafeBarrierMargin() of 13)
+        // producers on distinct registers, each followed by 14 padding instructions -- enough
+        // natural spacing that even the *closest* producer (6) clears its curated margin before
+        // the shared final consumer. Old (buggy) behavior: all seven got real intervals
+        // overlapping at the shared final consumer, exceeding the 6 physical slots --
+        // Unrepairable. Fixed behavior: every one of them clears its curated minimum margin, so
+        // none need a slot at all.
         std::vector<DecodedInstruction> decoded;
         for (int i = 0; i < 7; ++i) {
-            decoded.push_back(makeIns("LDG_R_ARI", {c_Pt, i}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
-                                       CuControlCode::mergeCode(0, 7, /*writebar=*/0, 1, 1)));
-            // Padding instruction between each producer and the shared consumer below, so no
-            // producer's nearest (only) consumer is its immediately-following instruction.
-            decoded.push_back(
-                makeIns("NOP", {c_Pt}, {}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)));
+            decoded.push_back(makeIns("LDS_R_ARI", {c_Pt, i}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
+                                       CuControlCode::mergeCode(0, 7, /*writebar=*/0, 1, /*stall=*/0)));
+            // 14 padding instructions after each producer -- even producer 6 (the closest to the
+            // shared consumer below) ends up with distance 14 >= its curated minimum margin of 13.
+            for (int pad = 0; pad < 14; ++pad) {
+                decoded.push_back(makeIns("NOP", {c_Pt}, {}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)));
+            }
         }
         std::vector<std::int64_t> consumerVals{c_Pt};
         std::vector<OperandRoleEntry> consumerRoles;
@@ -473,6 +517,58 @@ int main() {
             reChecked[i].ctrlCode = CuControlCode(kcc.ctrlCodeList[i]);
         }
         t.check("the zero-slot correction re-verifies clean",
+                verifyControlCodes(reChecked, CuAsm::CuSMVersion(75)).status == CheckStatus::Verified);
+    }
+
+    // ---- correctControlCodes(): minSafeBarrierMargin() restores genuine multi-slot overlap
+    // detection for a curated opcode, end to end -- the literal-adjacency-only version of this
+    // fix could never produce two overlapping intervals (every triggered interval was forced to
+    // exactly one instruction wide, and two distinct producers' width-1 windows can never overlap
+    // each other). A per-opcode minimum margin above 1 removes that limitation: two LDS_R_ARI
+    // producers, each below their own curated 13-margin threshold, can still need protection
+    // several instructions out, and if those windows overlap, they still need distinct slots. ----
+    {
+        // 0: LDS_R_ARI producer A on R4, margin 4 (< 13) -- needs a real interval [0, 5).
+        // 1: LDS_R_ARI producer B on R6, margin 4 (< 13) -- needs a real interval [1, 6), which
+        //    overlaps A's [0, 5) (A is still live when B's window opens).
+        // 2-4: padding.
+        // 5: consumer of A (RAW).
+        // 6: consumer of B (RAW).
+        const std::vector<DecodedInstruction> decoded = {
+            makeIns("LDS_R_ARI", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
+                    CuControlCode::mergeCode(0, 7, 0, 1, /*stall=*/0)),
+            makeIns("LDS_R_ARI", {c_Pt, 6}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
+                    CuControlCode::mergeCode(0, 7, 0, 1, /*stall=*/0)),
+            makeIns("MOV_R_II", {c_Pt, 10}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+            makeIns("MOV_R_II", {c_Pt, 11}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+            makeIns("MOV_R_II", {c_Pt, 12}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+            makeIns("MOV_R_R", {c_Pt, 20, 4}, {{OperandKind::GPR, AccessMode::WRITE}, {OperandKind::GPR, AccessMode::READ}}, c_Fixed,
+                    CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+            makeIns("MOV_R_R", {c_Pt, 21, 6}, {{OperandKind::GPR, AccessMode::WRITE}, {OperandKind::GPR, AccessMode::READ}}, c_Fixed,
+                    CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+        };
+        const auto graph = buildHazardGraph(decoded);
+        const auto intervals = collectBarrierIntervals(decoded, graph);
+        t.check("both curated-margin producers get real intervals", intervals.size() == 2);
+        t.check("...and those intervals genuinely overlap",
+                intervals.size() == 2 && intervals[0].producerIndex == 0 && intervals[0].firstConsumerIndex == 5 &&
+                    intervals[1].producerIndex == 1 && intervals[1].firstConsumerIndex == 6);
+
+        KernelControlCodes kcc = makeKcc(decoded);
+        const ControlCodeCheckResult result = correctControlCodes(kcc, decoded, CuAsm::CuSMVersion(75));
+        t.check("correctControlCodes() reports Corrected for two overlapping curated-margin producers",
+                result.status == CheckStatus::Corrected);
+
+        const CuControlCode producerA(kcc.ctrlCodeList[0]);
+        const CuControlCode producerB(kcc.ctrlCodeList[1]);
+        t.check("...and assigns them distinct physical slots, since their windows genuinely overlap",
+                producerA.getWriteSB() != -1 && producerB.getWriteSB() != -1 && producerA.getWriteSB() != producerB.getWriteSB());
+
+        std::vector<DecodedInstruction> reChecked = decoded;
+        for (std::size_t i = 0; i < reChecked.size(); ++i) {
+            reChecked[i].ctrlCode = CuControlCode(kcc.ctrlCodeList[i]);
+        }
+        t.check("the distinct-slot correction re-verifies clean",
                 verifyControlCodes(reChecked, CuAsm::CuSMVersion(75)).status == CheckStatus::Verified);
     }
 

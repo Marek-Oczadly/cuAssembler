@@ -1127,6 +1127,18 @@ inline bool isBarrierEligible(const LatencyClassEntry& producerLatency, BarrierT
  * @return The curated minimum safe margin for insKey, or 1 if uncurated.
  **/
 inline std::uint32_t minSafeBarrierMargin(const std::string& insKey) {
+    // Margin here is instruction-count-ish (natural distance + stall count), not a real cycle
+    // count -- see this function's own doc. The published-latency entries below (everything but
+    // LDS_R_ARI) use the paper's clock-cycle figure directly as a 1-margin-unit-per-cycle stand-in,
+    // which is itself an approximation (ignores dual issue, other warps' interleaving, etc.) on
+    // top of the paper's own measurement. That stacked imprecision is why every one of these picks
+    // the *most conservative* (highest, worst-case, or explicitly single-measured) figure available
+    // rather than an average -- consistent with this whole model's "conservative lower bound, not
+    // an exact cycle model" posture (simulateAndVerify()'s own doc). Source for all cycle counts
+    // below: Zhe Jia, Marco Maggioni, Jeffrey Smith, Daniele Paolo Scarpazza, "Dissecting the
+    // NVidia Turing T4 GPU via Microbenchmarking," arXiv:1903.07486 -- a T4 (sm_75) is the exact
+    // architecture this repo's other curated evidence (LatencyClass.sm_75.txt,
+    // TestData/CuTest/cudatest.7.sm_75.cuasm, Reports/gemm-tiled-repro.sass) already targets.
     static const std::map<std::string, std::uint32_t> table = {
         // LDS_R_ARI (LDS.U/LDS.U.128 through a register+immediate address): Reports/
         // gemm-tiled-repro.sass/.cu -- the real, ptxas-compiled, verify-cc-confirmed-correct
@@ -1135,8 +1147,90 @@ inline std::uint32_t minSafeBarrierMargin(const std::string& insKey) {
         // "LDS.U R16, [R0.X4+0x400] ;" at /*0290*/, first consumed by "FFMA R4, R16, R4, R19 ;"
         // at /*0330*/: 9 natural instructions of spacing (0x0a0 bytes / 0x10 per instruction,
         // minus the producer itself) plus the producer's own real stall count of 4 -- a
-        // witnessed-safe margin of 13.
+        // witnessed-safe margin of 13. Kept at this in-repo witnessed value rather than raised to
+        // arXiv:1903.07486's own ~19-cycle "no-conflict" shared-memory figure (Table 2) --
+        // corroborating, same ballpark -- because raising it would misclassify this repo's own
+        // confirmed-safe real case and reintroduce the reported false positive on this exact
+        // kernel; a single concrete witness beats a paper average for the one case they conflict.
         {"LDS_R_ARI", 13},
+        // LDS_R_AI/LDS_R_ARURI/LDS_R_AURI: same physical LDS.U op as LDS_R_ARI, only the address
+        // computation differs (immediate-only / register+uniform-register / uniform-register-only)
+        // -- extended by addressing-mode analogy, the same way LatencyClass.sm_75.txt itself
+        // curates every addressing-mode variant of one opcode identically.
+        {"LDS_R_AI", 13},
+        {"LDS_R_ARURI", 13},
+        {"LDS_R_AURI", 13},
+
+        // LDG_* (global memory load, register(+uniform-register)+immediate addressing): worst
+        // measured case, "616-cycle latency of the first access is the result of both L2 cache
+        // miss and TLB miss" (Figure 6) -- deliberately the ~616-cycle worst case, not the
+        // ~32-cycle L1-hit or ~188-cycle L2-hit case also reported there, since cache hit/miss is
+        // data-dependent at runtime and this repo's own real evidence (Reports/gemm-tiled-repro.sass
+        // -- both real LDG instances in that kernel are barrier-protected, never left to natural
+        // spacing) shows ptxas itself never trusts anything less for global memory.
+        {"LDG_R_ARI", 616},
+        {"LDG_R_ARI_P", 616},
+        {"LDG_R_ARURI", 616},
+        {"LDG_R_ARURI_P", 616},
+        {"LDG_R_AURI", 616},
+        // LD_* (generic/generic-space load): same physical address space and cache path as LDG,
+        // just the untyped ".E"-less generic-space opcode family -- family analogy, same as
+        // LatencyClass.sm_75.txt's own "extended by family analogy to ... LD ..." note for its
+        // FIXED/VARIABLE classification of this exact family.
+        {"LD_R_ARI", 616},
+        {"LD_R_ARURI", 616},
+        {"LD_R_AURI", 616},
+        // LDL_* (local memory load): local memory is backed by the same physical L1/L2/DRAM path
+        // as global memory (CUDA C++ Programming Guide, "Device Memory Accesses" -- local memory
+        // resides in the same physical memory as global memory), so the same worst-case figure is
+        // extended here by architectural analogy, not a direct per-opcode measurement.
+        {"LDL_R_ARI", 616},
+        {"LDL_R_ARURI", 616},
+        {"LDL_R_AURI", 616},
+
+        // LDC_*/ULDC_* (constant memory load): worst measured case among the three constant-cache
+        // levels the paper reports -- "L2 Broadcast Latency: ~215 cycles" (Table 2), vs. ~26
+        // cycles (L1 broadcast) and ~92 cycles (L1.5 broadcast) also reported there. ULDC extended
+        // by addressing-mode/family analogy (uniform-register variant of the same constant-cache
+        // load).
+        {"LDC_R_cAI", 215},
+        {"LDC_R_cARI", 215},
+        {"ULDC_UR_cAI", 215},
+        {"ULDC_UR_cAURI", 215},
+
+        // MUFU_* (special-function-unit transcendental ops: reciprocal, sqrt, etc.): "MUFU, FLO,
+        // BREV: ~15 cycles" (Table 6, dependent-issue latency on the contended SFU pipe) -- FLO/
+        // BREV are curated FIXED in LatencyClass.sm_75.txt (not barrier-eligible), so only the
+        // MUFU_* entries here are reachable by collectBarrierIntervals() at all.
+        {"MUFU_R_FI", 15},
+        {"MUFU_R_R", 15},
+        {"MUFU_R_UR", 15},
+        {"MUFU_R_cAI", 15},
+        // DMUL_* (double-precision multiply, curated VARIABLE:WRITE in LatencyClass.sm_75.txt --
+        // see that file's own note on why): "DADD, DMUL: ~48 cycles" (Table 6, dependent-issue
+        // latency on the contended DP pipe).
+        {"DMUL_R_R_FI", 48},
+        {"DMUL_R_R_R", 48},
+        {"DMUL_R_R_UR", 48},
+        {"DMUL_R_R_cAI", 48},
+
+        // Deliberately NOT curated despite being in the same paper:
+        // - ATOM_*/ATOMG_* (global atomics) and ATOMS_* (shared-memory atomics): the paper only
+        //   reports a *no-contention* baseline (Table 7: shared atomicAdd 8 cycles, global
+        //   atomicAdd 76 cycles) -- a best case, not a worst case. Using it as a *minimum safe*
+        //   margin would be backwards (a genuinely contended atomic in real code could need far
+        //   more than 76/8 cycles of margin, and this table has no measured upper bound for that),
+        //   so these opcodes are deliberately left at the uncurated default of 1 rather than risk
+        //   an unsafe threshold.
+        // - TEX_*/TLD_*/TLD4_*/TXD_*/SULD_* (texture): not reported in this paper; no other
+        //   Turing-specific source was found, so left uncurated rather than guessed.
+        // - SHFL_*/VOTE_*/MATCH_*/VOTEU_* (warp shuffle/vote): not reported in this paper.
+        // - HMMA_*/IMMA_*/BMMA_* (tensor core MMA): the paper discusses TensorCore *throughput*,
+        //   not a dependent-issue latency number, so nothing citable to curate here.
+        // - STG_*/STS_*/ST_*/STL_* (stores, VARIABLE:READ): this table is about how long a
+        //   producer's *result* takes to become ready, a different mechanism from how long a
+        //   store's *source register* must stay live before the store consumes it -- no source
+        //   found quantifying the latter, so left uncurated.
     };
     const auto it = table.find(insKey);
     return (it != table.end()) ? it->second : 1;
