@@ -258,8 +258,8 @@ int main() {
     {
         // Two non-overlapping intervals (touching at the boundary) may share a slot.
         const std::vector<BarrierInterval> intervals = {
-            {0, 2, BarrierType::WRITE},
-            {2, 4, BarrierType::WRITE},
+            {0, 2, BarrierType::WRITE, "OPCODE_A"},
+            {2, 4, BarrierType::WRITE, "OPCODE_B"},
         };
         const auto assignment = assignBarrierSlots(intervals);
         t.check("assignBarrierSlots() succeeds for two touching (non-overlapping) intervals", assignment.has_value());
@@ -267,34 +267,86 @@ int main() {
                 assignment.has_value() && assignment->slotsUsed == 1);
     }
     {
-        // Two genuinely overlapping intervals must get distinct slots.
+        // Two genuinely overlapping intervals of *different* insKeys must get distinct slots --
+        // this codebase has no confirmed FIFO-completion-order evidence across different
+        // instruction classes (assignBarrierSlots()'s own doc).
         const std::vector<BarrierInterval> intervals = {
-            {0, 3, BarrierType::WRITE},
-            {1, 4, BarrierType::WRITE},
+            {0, 3, BarrierType::WRITE, "OPCODE_A"},
+            {1, 4, BarrierType::WRITE, "OPCODE_B"},
         };
         const auto assignment = assignBarrierSlots(intervals);
         t.check("assignBarrierSlots() succeeds for two overlapping intervals", assignment.has_value());
-        t.check("two overlapping intervals need two distinct slots",
+        t.check("two overlapping intervals of different insKeys need two distinct slots",
                 assignment.has_value() && assignment->slotsUsed == 2 &&
                     assignment->slotOf.at(0) != assignment->slotOf.at(1));
     }
     {
-        // 7 intervals all mutually overlapping (all start before a shared end point) exceed the
-        // 6 physical scoreboard slots -- the "provably unrepairable in place" case.
+        // Regression for Reports/correct-cc-shared-slot-reuse-not-modeled.md: two genuinely
+        // overlapping intervals of the *same* insKey may share one physical slot -- real,
+        // ptxas-emitted control codes do exactly this (Reports/gemm-tiled-repro.sass: several
+        // back-to-back same-opcode producers tagged to one slot, retired by a single later wait).
+        const std::vector<BarrierInterval> intervals = {
+            {0, 3, BarrierType::WRITE, "LDS_R_ARI"},
+            {1, 4, BarrierType::WRITE, "LDS_R_ARI"},
+        };
+        const auto assignment = assignBarrierSlots(intervals);
+        t.check("assignBarrierSlots() succeeds for two overlapping same-insKey intervals", assignment.has_value());
+        t.check("...and packs them into a single shared slot",
+                assignment.has_value() && assignment->slotsUsed == 1);
+    }
+    {
+        // Regression for Reports/correct-cc-insKey-sharing-too-broad.md: 7 mutually-overlapping,
+        // contiguous, same-insKey intervals must NOT all collapse into one shared slot -- only the
+        // confirmed-safe c_MaxShareableGroupSize (3) may ever share, so this splits into three
+        // share groups (sizes 3, 3, 1) and, since every interval overlaps every other, needs one
+        // distinct slot per group.
+        std::vector<BarrierInterval> intervals;
+        for (std::size_t i = 0; i < 7; ++i) {
+            intervals.push_back(BarrierInterval{i, static_cast<std::size_t>(8), BarrierType::WRITE, "LDS_R_ARI"});
+        }
+        const auto assignment = assignBarrierSlots(intervals);
+        t.check("assignBarrierSlots() succeeds for 7 overlapping same-insKey intervals", assignment.has_value());
+        t.check("...but caps sharing at 3 producers per slot, needing 3 slots (not 1)",
+                assignment.has_value() && assignment->slotsUsed == 3);
+    }
+    {
+        // Regression for Reports/correct-cc-insKey-sharing-too-broad.md: two same-insKey,
+        // overlapping intervals with a *different*-insKey producer's interval issued in between
+        // (in producerIndex order) are not contiguous, so they must NOT be treated as shareable
+        // even though the insKey itself matches and they still overlap.
+        const std::vector<BarrierInterval> intervals = {
+            {0, 5, BarrierType::WRITE, "LDS_R_ARI"},
+            {1, 6, BarrierType::WRITE, "OPCODE_X"},
+            {2, 7, BarrierType::WRITE, "LDS_R_ARI"},
+        };
+        const auto assignment = assignBarrierSlots(intervals);
+        t.check("assignBarrierSlots() succeeds for a same-insKey pair split by an intervening different insKey",
+                assignment.has_value());
+        t.check("...and does not share the split same-insKey pair's slot",
+                assignment.has_value() && assignment->slotsUsed == 3 && assignment->slotOf.at(0) != assignment->slotOf.at(2));
+    }
+    {
+        // 7 intervals of 7 *distinct* insKeys, all mutually overlapping (all start before a
+        // shared end point), exceed the 6 physical scoreboard slots -- the "provably unrepairable
+        // in place" case. Distinct insKeys keep this exercising the "different classes can't
+        // share" path, not the new same-insKey sharing relaxation.
         std::vector<BarrierInterval> intervals;
         for (std::size_t i = 0; i < static_cast<std::size_t>(c_ScoreboardSlotCount) + 1; ++i) {
-            intervals.push_back(BarrierInterval{i, static_cast<std::size_t>(c_ScoreboardSlotCount) + 1, BarrierType::WRITE});
+            intervals.push_back(BarrierInterval{i, static_cast<std::size_t>(c_ScoreboardSlotCount) + 1, BarrierType::WRITE,
+                                                 "OPCODE_" + std::to_string(i)});
         }
-        t.check("assignBarrierSlots() reports no valid assignment for more simultaneous intervals than physical slots",
+        t.check("assignBarrierSlots() reports no valid assignment for more simultaneous distinct-insKey "
+                "intervals than physical slots",
                 !assignBarrierSlots(intervals).has_value());
     }
     {
         // getReadSB()/getWriteSB() draw from the same 6-id physical slot pool (Reports/tasks.md
         // Phase 1.1's confirmation that a real instruction can set both simultaneously) -- two
-        // overlapping intervals must need distinct slots even when their *direction* differs.
+        // overlapping intervals of different insKeys must need distinct slots even when their
+        // *direction* differs too.
         const std::vector<BarrierInterval> intervals = {
-            {0, 3, BarrierType::WRITE},
-            {1, 4, BarrierType::READ},
+            {0, 3, BarrierType::WRITE, "OPCODE_A"},
+            {1, 4, BarrierType::READ, "OPCODE_B"},
         };
         const auto assignment = assignBarrierSlots(intervals);
         t.check("assignBarrierSlots() succeeds for two overlapping intervals of different directions", assignment.has_value());
@@ -545,26 +597,27 @@ int main() {
     }
 
     // ---- correctControlCodes(): minSafeBarrierMargin() restores genuine multi-slot overlap
-    // detection for a curated opcode, end to end -- the literal-adjacency-only version of this
-    // fix could never produce two overlapping intervals (every triggered interval was forced to
-    // exactly one instruction wide, and two distinct producers' width-1 windows can never overlap
-    // each other). A per-opcode minimum margin above 1 removes that limitation: two DMUL_R_R_R
-    // producers, each below their own curated 48-margin threshold, can still need protection
-    // several instructions out, and if those windows overlap, they still need distinct slots.
-    // (LDS_R_ARI is deliberately not used here any more -- see minSafeBarrierMargin()'s own doc
-    // for why its curated margin was proven unsound and removed.) ----
+    // detection for two *different* curated opcodes, end to end -- the literal-adjacency-only
+    // version of this fix could never produce two overlapping intervals (every triggered interval
+    // was forced to exactly one instruction wide, and two distinct producers' width-1 windows can
+    // never overlap each other). A per-opcode minimum margin above 1 removes that limitation: two
+    // producers, each below their own curated margin threshold, can still need protection several
+    // instructions out, and if those windows overlap, they still need distinct slots -- *because*
+    // they're different insKeys (DMUL_R_R_R and MUFU_R_R); see assignBarrierSlots()'s own doc and
+    // the dedicated same-insKey-sharing tests above/below for the complementary case
+    // (Reports/correct-cc-shared-slot-reuse-not-modeled.md) where overlap alone is no longer
+    // sufficient to force distinct slots. (LDS_R_ARI is deliberately not used here any more -- see
+    // minSafeBarrierMargin()'s own doc for why its curated margin was proven unsound and removed.) ----
     {
         // 0: DMUL_R_R_R producer A on R4, margin 4 (< 48), no pre-existing barrier -- needs a real
         //    interval [0, 5) from margin logic alone (not the safety net).
-        // 1: DMUL_R_R_R producer B on R6, margin 4 (< 48) -- needs a real interval [1, 6), which
-        //    overlaps A's [0, 5) (A is still live when B's window opens).
-        // 2-4: padding.
-        // 5: consumer of A (RAW).
-        // 6: consumer of B (RAW).
+        // 1: MUFU_R_R producer B on R6, margin 4 (< 15) -- needs a real interval [1, 6), which
+        //    overlaps A's [0, 5) (A is still live when B's window opens). A different insKey from
+        //    A, so the two must still get distinct slots despite the new same-insKey sharing rule.
         const std::vector<DecodedInstruction> decoded = {
             makeIns("DMUL_R_R_R", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
                     CuControlCode::mergeCode(0, 7, /*writebar=*/7, 1, /*stall=*/0)),
-            makeIns("DMUL_R_R_R", {c_Pt, 6}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
+            makeIns("MUFU_R_R", {c_Pt, 6}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
                     CuControlCode::mergeCode(0, 7, /*writebar=*/7, 1, /*stall=*/0)),
             makeIns("MOV_R_II", {c_Pt, 10}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
             makeIns("MOV_R_II", {c_Pt, 11}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
@@ -596,6 +649,74 @@ int main() {
             reChecked[i].ctrlCode = CuControlCode(kcc.ctrlCodeList[i]);
         }
         t.check("the distinct-slot correction re-verifies clean",
+                verifyControlCodes(reChecked, CuAsm::CuSMVersion(75)).status == CheckStatus::Verified);
+    }
+
+    // ---- correctControlCodes(): regression for Reports/correct-cc-shared-slot-reuse-not-
+    // modeled.md -- three overlapping VARIABLE producers of the *same* insKey must be packed into
+    // one shared physical slot, not rejected as needing 3 distinct ones. This is the exact shape
+    // of the bug: a real, ptxas-compiled GEMM kernel's `LDS.U` producers do exactly this (three
+    // back-to-back same-opcode loads sharing one slot, closed by a single later wait), and the
+    // old interval-coloring model (any overlap forces distinct slots) treated them as needing 3
+    // separate slots, which multiplied across a densely unrolled loop until it exceeded the 6
+    // physical slots and falsely reported Unrepairable on a kernel `verify-cc` confirms is
+    // already 100% correct. ----
+    {
+        // 0: LDG_R_ARI producer P0 on R4 -- interval [0, 10) (huge curated margin of 616 means it
+        //    always needs a real interval, regardless of natural spacing).
+        // 1: LDG_R_ARI producer P1 on R6 -- interval [1, 5), overlapping P0's.
+        // 2: LDG_R_ARI producer P2 on R8 -- interval [2, 8), overlapping both P0's and P1's.
+        // 3-4, 6-7, 9: unrelated padding (distinct destination registers, never read/written by
+        //    the producers or their consumers, so they add no extra hazard edges).
+        // 5: consumer of P1 (RAW on R6) -- P1's *earliest* (and only) barrier-eligible consumer.
+        // 8: consumer of P2 (RAW on R8).
+        // 10: consumer of P0 (RAW on R4).
+        const std::vector<DecodedInstruction> decoded = {
+            makeIns("LDG_R_ARI", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
+                    CuControlCode::mergeCode(0, 7, /*writebar=*/7, 1, /*stall=*/0)),
+            makeIns("LDG_R_ARI", {c_Pt, 6}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
+                    CuControlCode::mergeCode(0, 7, /*writebar=*/7, 1, /*stall=*/0)),
+            makeIns("LDG_R_ARI", {c_Pt, 8}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
+                    CuControlCode::mergeCode(0, 7, /*writebar=*/7, 1, /*stall=*/0)),
+            makeIns("MOV_R_II", {c_Pt, 20}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+            makeIns("MOV_R_II", {c_Pt, 21}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+            makeIns("MOV_R_R", {c_Pt, 22, 6}, {{OperandKind::GPR, AccessMode::WRITE}, {OperandKind::GPR, AccessMode::READ}}, c_Fixed,
+                    CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+            makeIns("MOV_R_II", {c_Pt, 23}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+            makeIns("MOV_R_II", {c_Pt, 24}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+            makeIns("MOV_R_R", {c_Pt, 25, 8}, {{OperandKind::GPR, AccessMode::WRITE}, {OperandKind::GPR, AccessMode::READ}}, c_Fixed,
+                    CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+            makeIns("MOV_R_II", {c_Pt, 26}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+            makeIns("MOV_R_R", {c_Pt, 27, 4}, {{OperandKind::GPR, AccessMode::WRITE}, {OperandKind::GPR, AccessMode::READ}}, c_Fixed,
+                    CuControlCode::mergeCode(0, 7, 7, 1, 1)),
+        };
+        const auto graph = buildHazardGraph(decoded);
+        const auto intervals = collectBarrierIntervals(decoded, graph);
+        t.check("all three same-insKey producers get real intervals", intervals.size() == 3);
+        t.check("...and those intervals are mutually overlapping (the old model's worst case)",
+                intervals.size() == 3 && intervals[0].producerIndex == 0 && intervals[0].firstConsumerIndex == 10 &&
+                    intervals[1].producerIndex == 1 && intervals[1].firstConsumerIndex == 5 &&
+                    intervals[2].producerIndex == 2 && intervals[2].firstConsumerIndex == 8);
+
+        KernelControlCodes kcc = makeKcc(decoded);
+        const ControlCodeCheckResult result = correctControlCodes(kcc, decoded, CuAsm::CuSMVersion(75));
+        t.check("correctControlCodes() reports Corrected for three overlapping same-insKey producers "
+                "(not Unrepairable)",
+                result.status == CheckStatus::Corrected);
+        t.check("...and packs all three into a single shared scoreboard slot", result.message.find("1/6") != std::string::npos);
+
+        const CuControlCode producerP0(kcc.ctrlCodeList[0]);
+        const CuControlCode producerP1(kcc.ctrlCodeList[1]);
+        const CuControlCode producerP2(kcc.ctrlCodeList[2]);
+        t.check("all three producers were actually assigned the same real scoreboard slot",
+                producerP0.getWriteSB() != -1 && producerP0.getWriteSB() == producerP1.getWriteSB() &&
+                    producerP0.getWriteSB() == producerP2.getWriteSB());
+
+        std::vector<DecodedInstruction> reChecked = decoded;
+        for (std::size_t i = 0; i < reChecked.size(); ++i) {
+            reChecked[i].ctrlCode = CuControlCode(kcc.ctrlCodeList[i]);
+        }
+        t.check("the shared-slot correction re-verifies clean",
                 verifyControlCodes(reChecked, CuAsm::CuSMVersion(75)).status == CheckStatus::Verified);
     }
 

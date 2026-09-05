@@ -1256,8 +1256,11 @@ struct BarrierInterval {
     std::size_t firstConsumerIndex;
     BarrierType direction;
     /// Producer's DecodedInstruction::insKey (opcode + operand shape). Two overlapping intervals
-    /// with the same insKey may share one physical slot instead of needing distinct ones -- see
-    /// assignBarrierSlots()'s own doc and Reports/correct-cc-shared-slot-reuse-not-modeled.md.
+    /// with the same insKey *and* direction, contiguous in program order and within a small capped
+    /// group, may share one physical slot instead of needing distinct ones -- see
+    /// computeShareGroups()/assignBarrierSlots()'s own docs,
+    /// Reports/correct-cc-shared-slot-reuse-not-modeled.md, and
+    /// Reports/correct-cc-insKey-sharing-too-broad.md (why "same insKey anywhere" was too broad).
     std::string insKey;
 };
 
@@ -1285,8 +1288,10 @@ struct BarrierInterval {
  *        instruction wide -- an opcode curated with a minimum margin above 1 (see
  *        minSafeBarrierMargin()) can still need protection several instructions out, which is what
  *        lets two such producers' intervals genuinely overlap -- and, per assignBarrierSlots()'s
- *        own doc, need distinct slots when they're different opcodes, or may share one slot when
- *        they're the same opcode (BarrierInterval::insKey, populated below from the producer's own
+ *        (and computeShareGroups()'s) own docs, need distinct slots when they're different
+ *        opcodes/directions or too far apart/too large a group, or may share one slot when
+ *        they're the same opcode/direction, contiguous, and within the capped group size
+ *        (BarrierInterval::insKey, populated below from the producer's own
  *        DecodedInstruction::insKey).
  * @param instrs Kernel's decoded instructions, in program order.
  * @param graph Hazard graph for instrs, as returned by buildHazardGraph(instrs).
@@ -1353,10 +1358,63 @@ struct BarrierAssignment {
     int slotsUsed = 0;
 };
 
+/// Maximum number of producers that may ever be merged onto one shared scoreboard slot (see
+/// computeShareGroups()). Reports/correct-cc-insKey-sharing-too-broad.md: the only *confirmed*,
+/// real, ptxas-emitted evidence of same-slot sharing (Reports/gemm-tiled-repro.sass) is a group of
+/// exactly three consecutive same-class `LDS.U` producers retired by one later wait. There is no
+/// evidence a real scoreboard slot can track more concurrent producers than that -- generalizing
+/// to "any number, anywhere" produced a silently-wrong-output kernel (TestFailed on real
+/// hardware). Capped at the largest *confirmed* group size, per minSafeBarrierMargin()'s own
+/// "only curate what's confirmed" policy.
+inline constexpr std::size_t c_MaxShareableGroupSize = 3;
+
+/**
+ * @brief Partitions intervals (producerIndex-ascending, as collectBarrierIntervals() returns them)
+ *        into "share groups": two intervals may only be considered shareable
+ *        (assignBarrierSlots()) when they land in the same group.
+ *
+ *        A group is a maximal *contiguous run* -- in this producerIndex-ascending list, with no
+ *        other barrier-needing producer of a different insKey or direction issued in between --
+ *        of same-insKey, same-direction intervals, additionally split so no group ever exceeds
+ *        c_MaxShareableGroupSize members.
+ *
+ *        Reports/correct-cc-insKey-sharing-too-broad.md: the previous rule ("shareable whenever
+ *        insKey matches, anywhere in the kernel") let every same-opcode producer in a densely
+ *        unrolled loop collapse into one giant mutually-shareable set, regardless of how many
+ *        producers that was or whether anything else was interleaved between them -- far beyond
+ *        the narrow, confirmed-safe pattern (a handful of *consecutive* same-class producers
+ *        closed by a single later wait) the rule was meant to capture, and it produced a kernel
+ *        that ran but returned wrong output on real hardware. Requiring contiguity (so a
+ *        different-class producer issued in between starts a new group) and capping group size at
+ *        the confirmed-safe c_MaxShareableGroupSize keeps this rule from generalizing past what
+ *        Reports/gemm-tiled-repro.sass actually demonstrates.
+ * @param intervals Barrier-needing producers, as returned by collectBarrierIntervals().
+ * @return One group id per interval, indices aligned with intervals.
+ **/
+inline std::vector<int> computeShareGroups(const std::vector<BarrierInterval>& intervals) {
+    std::vector<int> group(intervals.size());
+    int current = 0;
+    std::size_t runLength = 0;
+    for (std::size_t i = 0; i < intervals.size(); ++i) {
+        const bool continuesRun = i > 0 && intervals[i].insKey == intervals[i - 1].insKey &&
+                                   intervals[i].direction == intervals[i - 1].direction && runLength < c_MaxShareableGroupSize;
+        if (!continuesRun) {
+            if (i > 0) {
+                ++current;
+            }
+            runLength = 0;
+        }
+        group[i] = current;
+        ++runLength;
+    }
+    return group;
+}
+
 /**
  * @brief Assigns each BarrierInterval a physical scoreboard slot id (Reports/tasks.md Phase 4's
  *        "barrier-id reassignment... as an interval-coloring problem", refined by
- *        Reports/correct-cc-shared-slot-reuse-not-modeled.md's slot-sharing fix): builds an
+ *        Reports/correct-cc-shared-slot-reuse-not-modeled.md's slot-sharing fix and tightened by
+ *        Reports/correct-cc-insKey-sharing-too-broad.md's group cap/contiguity fix): builds an
  *        undirected interference graph over intervals (an edge between two iff they actually
  *        overlap -- see BarrierInterval's own doc for why touching endpoints don't count -- AND
  *        are not mutually shareable, see below) with Boost.Graph, then colors it with
@@ -1364,34 +1422,39 @@ struct BarrierAssignment {
  *        (producerIndex) order.
  *
  *        Two overlapping intervals are shareable (no interference edge, so the coloring is free to
- *        give them the same slot) when they carry the same producer insKey (opcode + operand
- *        shape). This is real, ptxas-emitted, hardware-valid behavior: same-slot reuse is a FIFO
- *        queue, not an exclusive lock (see simulateAndVerify()'s own doc), and real, working
- *        control codes routinely tag several back-to-back producers of the *same* instruction
- *        class to one physical slot, closing all of them with a single later wait (confirmed via
- *        Reports/gemm-tiled-repro.sass: three consecutive `LDS.U` instances sharing one slot,
- *        retired together). Sharing an overlapping same-insKey producer's slot can only ever
- *        retire it *earlier* than its own individually-nearest consumer required -- always safe,
- *        since firstConsumerIndex is already that producer's earliest real deadline and
- *        simulateAndVerify()'s per-producer `retired` flag is permanent once set (an early
- *        retirement can never un-satisfy a later real consumer). This function does not need to
- *        (and does not) change how a wait actually gets placed for a shared-slot producer --
- *        correctControlCodes() already sets a wait bit at *each* interval's own firstConsumerIndex
- *        regardless of whether its slot is shared, and a shared slot's queue-clearing semantics
- *        (simulateAndVerify() step 1) handle the rest.
+ *        give them the same slot) only when computeShareGroups() places them in the same share
+ *        group -- i.e. same producer insKey (opcode + operand shape) *and* direction, contiguous
+ *        in program order (no other class's producer issued in between), within a group no larger
+ *        than c_MaxShareableGroupSize. This is real, ptxas-emitted, hardware-valid behavior in that
+ *        narrow shape: same-slot reuse is a FIFO queue, not an exclusive lock (see
+ *        simulateAndVerify()'s own doc), and real, working control codes tag a handful of
+ *        back-to-back producers of the *same* instruction class to one physical slot, closing all
+ *        of them with a single later wait (confirmed via Reports/gemm-tiled-repro.sass: three
+ *        consecutive `LDS.U` instances sharing one slot, retired together). Sharing an overlapping
+ *        same-group producer's slot can only ever retire it *earlier* than its own
+ *        individually-nearest consumer required -- always safe, since firstConsumerIndex is
+ *        already that producer's earliest real deadline and simulateAndVerify()'s per-producer
+ *        `retired` flag is permanent once set (an early retirement can never un-satisfy a later
+ *        real consumer) -- *for the confirmed group size*; see c_MaxShareableGroupSize's own doc
+ *        for why that safety argument is not extended to arbitrarily large or non-contiguous
+ *        groups. This function does not need to (and does not) change how a wait actually gets
+ *        placed for a shared-slot producer -- correctControlCodes() already sets a wait bit at
+ *        *each* interval's own firstConsumerIndex regardless of whether its slot is shared, and a
+ *        shared slot's queue-clearing semantics (simulateAndVerify() step 1) handle the rest.
  *
- *        Two overlapping intervals of *different* insKeys still get distinct slots: there is no
- *        confirmed evidence the same FIFO-completes-in-issue-order guarantee holds when different
- *        instruction classes (potentially different execution units, different real latencies)
- *        share one slot -- if the real hardware mechanism turns out to be a simple "in-use" tag
- *        rather than a true per-slot completion counter, mixing classes on one slot could let one
- *        producer's completion prematurely clear a wait that a *different*, still-pending producer
- *        needed. Left conservatively disallowed until there's real evidence for it, exactly like
- *        minSafeBarrierMargin()'s own "only curate what's confirmed" policy.
+ *        Two overlapping intervals of *different* insKeys, different directions, non-contiguous
+ *        (something else issued between them), or beyond the group cap still get distinct slots:
+ *        there is no confirmed evidence the same FIFO-completes-in-issue-order guarantee holds
+ *        beyond the narrow confirmed pattern -- if the real hardware mechanism turns out to be a
+ *        simple "in-use" tag rather than a true per-slot completion counter, or has limited
+ *        concurrent-tracking depth, mixing classes or over-sized/non-contiguous groups on one slot
+ *        could let one producer's completion prematurely clear a wait that a *different*, still-
+ *        pending producer needed. Left conservatively disallowed until there's real evidence for
+ *        it, exactly like minSafeBarrierMargin()'s own "only curate what's confirmed" policy.
  *
  *        Greedy coloring in increasing-left-endpoint order is a classical *exact* (not merely
  *        heuristic) algorithm for plain interval graphs -- it always uses exactly the maximum
- *        simultaneous overlap ("clique number") of colors, no more. Allowing same-insKey sharing
+ *        simultaneous overlap ("clique number") of colors, no more. Allowing same-group sharing
  *        turns this into a slightly different (interval graph with some pairs pre-merged) problem;
  *        the greedy coloring is no longer guaranteed to find the *global* minimum number of slots
  *        for every possible input, but it can never use *more* slots than the plain interval-graph
@@ -1404,7 +1467,7 @@ struct BarrierAssignment {
  * @return A BarrierAssignment mapping every interval's producerIndex to a slot id in
  *         [0, c_ScoreboardSlotCount), or std::nullopt if the interference graph's chromatic number
  *         exceeds c_ScoreboardSlotCount -- i.e. more than 6 of these producers are ever
- *         simultaneously in flight, in distinct-insKey groups, for this instruction order, which
+ *         simultaneously in flight, in distinct share groups, for this instruction order, which
  *         cannot be repaired without inserting an instruction to close one of them earlier
  *         (forbidden by the shuffler's own "never insert/remove instructions" constraint). This is
  *         the "reorder is provably unrepairable in place" case (Reports/tasks.md Phase 4 / report
@@ -1413,13 +1476,15 @@ struct BarrierAssignment {
 inline std::optional<BarrierAssignment> assignBarrierSlots(const std::vector<BarrierInterval>& intervals) {
     using IntervalGraph = boost::adjacency_list<boost::vecS, boost::vecS, boost::undirectedS>;
 
+    const std::vector<int> shareGroup = computeShareGroups(intervals);
+
     IntervalGraph graph(intervals.size());
     for (std::size_t i = 0; i < intervals.size(); ++i) {
         for (std::size_t j = i + 1; j < intervals.size(); ++j) {
             const std::size_t maxStart = std::max(intervals[i].producerIndex, intervals[j].producerIndex);
             const std::size_t minEnd = std::min(intervals[i].firstConsumerIndex, intervals[j].firstConsumerIndex);
             const bool overlaps = maxStart < minEnd;
-            const bool shareable = intervals[i].insKey == intervals[j].insKey;
+            const bool shareable = shareGroup[i] == shareGroup[j];
             if (overlaps && !shareable) {
                 boost::add_edge(i, j, graph);
             }
