@@ -1246,14 +1246,19 @@ inline std::uint32_t minSafeBarrierMargin(const std::string& insKey) {
 /// firstConsumerIndex, not at producerIndex's *last* consumer -- a tighter (and still fully
 /// correct) interval than "open until the last use" would give, which is what makes self-waiting
 /// at only the earliest consumer (rather than every consumer) both sufficient and slot-efficient.
-/// Two BarrierIntervals only need distinct slots if they actually overlap (see
-/// assignBarrierSlots()); touching endpoints (one interval's firstConsumerIndex equal to
-/// another's producerIndex) are fine, since simulateAndVerify() retires a slot's occupants (step
-/// 1) before checking/claiming anything new on it (steps 2-3) within the same instruction.
+/// Two BarrierIntervals only need distinct slots if they actually overlap AND are not mutually
+/// shareable (see assignBarrierSlots()); touching endpoints (one interval's firstConsumerIndex
+/// equal to another's producerIndex) are fine, since simulateAndVerify() retires a slot's
+/// occupants (step 1) before checking/claiming anything new on it (steps 2-3) within the same
+/// instruction.
 struct BarrierInterval {
     std::size_t producerIndex;
     std::size_t firstConsumerIndex;
     BarrierType direction;
+    /// Producer's DecodedInstruction::insKey (opcode + operand shape). Two overlapping intervals
+    /// with the same insKey may share one physical slot instead of needing distinct ones -- see
+    /// assignBarrierSlots()'s own doc and Reports/correct-cc-shared-slot-reuse-not-modeled.md.
+    std::string insKey;
 };
 
 /**
@@ -1279,7 +1284,10 @@ struct BarrierInterval {
  *        old literal-adjacency-only rule, a triggered interval here is not always exactly one
  *        instruction wide -- an opcode curated with a minimum margin above 1 (see
  *        minSafeBarrierMargin()) can still need protection several instructions out, which is what
- *        lets two such producers' intervals genuinely overlap and need distinct slots again.
+ *        lets two such producers' intervals genuinely overlap -- and, per assignBarrierSlots()'s
+ *        own doc, need distinct slots when they're different opcodes, or may share one slot when
+ *        they're the same opcode (BarrierInterval::insKey, populated below from the producer's own
+ *        DecodedInstruction::insKey).
  * @param instrs Kernel's decoded instructions, in program order.
  * @param graph Hazard graph for instrs, as returned by buildHazardGraph(instrs).
  * @return One BarrierInterval per producer that genuinely needs a reserved slot, ordered by
@@ -1300,7 +1308,8 @@ inline std::vector<BarrierInterval> collectBarrierIntervals(const std::vector<De
             continue;
         }
 
-        const auto [it, inserted] = needs.try_emplace(producer, BarrierInterval{producer, consumer, relevantAccess});
+        const auto [it, inserted] =
+            needs.try_emplace(producer, BarrierInterval{producer, consumer, relevantAccess, instrs[producer].insKey});
         if (!inserted) {
             it->second.firstConsumerIndex = std::min(it->second.firstConsumerIndex, consumer);
         }
@@ -1346,24 +1355,60 @@ struct BarrierAssignment {
 
 /**
  * @brief Assigns each BarrierInterval a physical scoreboard slot id (Reports/tasks.md Phase 4's
- *        "barrier-id reassignment... as an interval-coloring problem"): builds an undirected
- *        interference graph over intervals (an edge between two iff they actually overlap -- see
- *        BarrierInterval's own doc for why touching endpoints don't count) with Boost.Graph, then
- *        colors it with boost::sequential_vertex_coloring, processing intervals in increasing
- *        start (producerIndex) order. Greedy coloring in increasing-left-endpoint order is a
- *        classical *exact* (not merely heuristic) algorithm specifically for interval graphs --
- *        it always uses exactly the maximum simultaneous overlap ("clique number") of colors, no
- *        more -- which is what lets this simple approach double as the "is 6 slots enough"
- *        feasibility check the report calls for, not just a best-effort packing.
+ *        "barrier-id reassignment... as an interval-coloring problem", refined by
+ *        Reports/correct-cc-shared-slot-reuse-not-modeled.md's slot-sharing fix): builds an
+ *        undirected interference graph over intervals (an edge between two iff they actually
+ *        overlap -- see BarrierInterval's own doc for why touching endpoints don't count -- AND
+ *        are not mutually shareable, see below) with Boost.Graph, then colors it with
+ *        boost::sequential_vertex_coloring, processing intervals in increasing start
+ *        (producerIndex) order.
+ *
+ *        Two overlapping intervals are shareable (no interference edge, so the coloring is free to
+ *        give them the same slot) when they carry the same producer insKey (opcode + operand
+ *        shape). This is real, ptxas-emitted, hardware-valid behavior: same-slot reuse is a FIFO
+ *        queue, not an exclusive lock (see simulateAndVerify()'s own doc), and real, working
+ *        control codes routinely tag several back-to-back producers of the *same* instruction
+ *        class to one physical slot, closing all of them with a single later wait (confirmed via
+ *        Reports/gemm-tiled-repro.sass: three consecutive `LDS.U` instances sharing one slot,
+ *        retired together). Sharing an overlapping same-insKey producer's slot can only ever
+ *        retire it *earlier* than its own individually-nearest consumer required -- always safe,
+ *        since firstConsumerIndex is already that producer's earliest real deadline and
+ *        simulateAndVerify()'s per-producer `retired` flag is permanent once set (an early
+ *        retirement can never un-satisfy a later real consumer). This function does not need to
+ *        (and does not) change how a wait actually gets placed for a shared-slot producer --
+ *        correctControlCodes() already sets a wait bit at *each* interval's own firstConsumerIndex
+ *        regardless of whether its slot is shared, and a shared slot's queue-clearing semantics
+ *        (simulateAndVerify() step 1) handle the rest.
+ *
+ *        Two overlapping intervals of *different* insKeys still get distinct slots: there is no
+ *        confirmed evidence the same FIFO-completes-in-issue-order guarantee holds when different
+ *        instruction classes (potentially different execution units, different real latencies)
+ *        share one slot -- if the real hardware mechanism turns out to be a simple "in-use" tag
+ *        rather than a true per-slot completion counter, mixing classes on one slot could let one
+ *        producer's completion prematurely clear a wait that a *different*, still-pending producer
+ *        needed. Left conservatively disallowed until there's real evidence for it, exactly like
+ *        minSafeBarrierMargin()'s own "only curate what's confirmed" policy.
+ *
+ *        Greedy coloring in increasing-left-endpoint order is a classical *exact* (not merely
+ *        heuristic) algorithm for plain interval graphs -- it always uses exactly the maximum
+ *        simultaneous overlap ("clique number") of colors, no more. Allowing same-insKey sharing
+ *        turns this into a slightly different (interval graph with some pairs pre-merged) problem;
+ *        the greedy coloring is no longer guaranteed to find the *global* minimum number of slots
+ *        for every possible input, but it can never use *more* slots than the plain interval-graph
+ *        coloring would have (removing edges only ever relaxes a coloring problem), so the "is 6
+ *        slots enough" check this doubles as remains a sound (if not always perfectly tight) test:
+ *        a real, working schedule that fits in 6 slots is never wrongly rejected because of this
+ *        relaxation, which is the specific failure this fix targets.
  * @param intervals Barrier-needing producers, as returned by collectBarrierIntervals() (must be
  *        producerIndex-ascending, which that function already guarantees).
  * @return A BarrierAssignment mapping every interval's producerIndex to a slot id in
  *         [0, c_ScoreboardSlotCount), or std::nullopt if the interference graph's chromatic number
  *         exceeds c_ScoreboardSlotCount -- i.e. more than 6 of these producers are ever
- *         simultaneously in flight for this instruction order, which cannot be repaired without
- *         inserting an instruction to close one of them earlier (forbidden by the shuffler's own
- *         "never insert/remove instructions" constraint). This is the "reorder is provably
- *         unrepairable in place" case (Reports/tasks.md Phase 4 / report section 3).
+ *         simultaneously in flight, in distinct-insKey groups, for this instruction order, which
+ *         cannot be repaired without inserting an instruction to close one of them earlier
+ *         (forbidden by the shuffler's own "never insert/remove instructions" constraint). This is
+ *         the "reorder is provably unrepairable in place" case (Reports/tasks.md Phase 4 / report
+ *         section 3).
  **/
 inline std::optional<BarrierAssignment> assignBarrierSlots(const std::vector<BarrierInterval>& intervals) {
     using IntervalGraph = boost::adjacency_list<boost::vecS, boost::vecS, boost::undirectedS>;
@@ -1373,7 +1418,9 @@ inline std::optional<BarrierAssignment> assignBarrierSlots(const std::vector<Bar
         for (std::size_t j = i + 1; j < intervals.size(); ++j) {
             const std::size_t maxStart = std::max(intervals[i].producerIndex, intervals[j].producerIndex);
             const std::size_t minEnd = std::min(intervals[i].firstConsumerIndex, intervals[j].firstConsumerIndex);
-            if (maxStart < minEnd) {
+            const bool overlaps = maxStart < minEnd;
+            const bool shareable = intervals[i].insKey == intervals[j].insKey;
+            if (overlaps && !shareable) {
                 boost::add_edge(i, j, graph);
             }
         }
