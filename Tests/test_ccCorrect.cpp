@@ -190,14 +190,18 @@ int main() {
                 collectBarrierIntervals(instrs, graph).empty());
     }
     {
-        // minSafeBarrierMargin() regression: LDS_R_ARI is curated with a minimum safe margin of
-        // 13 (Reports/gemm-tiled-repro.sass's own tightest witnessed-unbarriered LDS.U instance),
-        // well above the uncurated default of 1. A margin that would satisfy the *default*
-        // threshold (distance 3 + stall 1 = 4) must still be judged unsafe for this specific
-        // curated opcode, and still get a real interval.
+        // minSafeBarrierMargin() regression: DMUL_R_R_R is curated with a minimum safe margin of
+        // 48 (arXiv:1903.07486's DP-pipe dependent-issue latency figure), well above the uncurated
+        // default of 1. Input has no pre-existing barrier (writebar unset), so this exercises the
+        // margin logic itself, not collectBarrierIntervals()'s safety net. A margin that would
+        // satisfy the *default* threshold (distance 3 + stall 1 = 4) must still be judged unsafe
+        // for this specific curated opcode, and still get a real interval. NOTE: LDS_R_ARI is
+        // deliberately NOT used here any more -- see minSafeBarrierMargin()'s own doc for why a
+        // curated LDS_R_ARI margin was proven unsound and removed
+        // (Reports/correct-cc-margin-heuristic-strips-real-barriers.md).
         const std::vector<DecodedInstruction> instrs = {
-            makeIns("LDS_R_ARI", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
-                    CuControlCode::mergeCode(0, 7, 0, 1, /*stall=*/1)),
+            makeIns("DMUL_R_R_R", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
+                    CuControlCode::mergeCode(0, 7, 7, 1, /*stall=*/1)),
             makeIns("MOV_R_II", {c_Pt, 5}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
             makeIns("MOV_R_II", {c_Pt, 6}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
             makeIns("MOV_R_II", {c_Pt, 7}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
@@ -211,14 +215,13 @@ int main() {
                 intervals.size() == 1 && intervals[0].producerIndex == 0 && intervals[0].firstConsumerIndex == 4);
     }
     {
-        // Same shape, but with exactly margin 13 (distance 12 + stall 1) -- the tightest real
-        // margin Reports/gemm-tiled-repro.sass actually witnesses safe for LDS_R_ARI. This must
-        // stay interval-free, or this fix would reintroduce the reported false positive on that
-        // exact kernel.
+        // Same shape, but with exactly margin 48 (distance 47 + stall 1) -- DMUL_R_R_R's curated
+        // threshold. This must stay interval-free (margin clears the bar, and the input has no
+        // pre-existing barrier for the safety net to preserve either).
         std::vector<DecodedInstruction> instrs;
-        instrs.push_back(makeIns("LDS_R_ARI", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
-                                  CuControlCode::mergeCode(0, 7, 0, 1, /*stall=*/1)));
-        for (int i = 0; i < 12; ++i) {
+        instrs.push_back(makeIns("DMUL_R_R_R", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
+                                  CuControlCode::mergeCode(0, 7, 7, 1, /*stall=*/1)));
+        for (int i = 0; i < 47; ++i) {
             instrs.push_back(makeIns("MOV_R_II", {c_Pt, 5}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed,
                                       CuControlCode::mergeCode(0, 7, 7, 1, 1)));
         }
@@ -227,6 +230,28 @@ int main() {
         const auto graph = buildHazardGraph(instrs);
         t.check("a curated opcode exactly at its own minimum safe margin needs no interval",
                 collectBarrierIntervals(instrs, graph).empty());
+    }
+    {
+        // Safety net regression for Reports/correct-cc-margin-heuristic-strips-real-barriers.md:
+        // a producer whose margin clears its curated threshold, but whose *input* control code
+        // already has a real barrier set for this access, must still get a real interval -- the
+        // margin heuristic must never erase direct, first-party evidence a producer needed
+        // protection. Same shape as the "exactly at margin" case above, except writebar is
+        // pre-set (slot 0) on the producer.
+        std::vector<DecodedInstruction> instrs;
+        instrs.push_back(makeIns("DMUL_R_R_R", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
+                                  CuControlCode::mergeCode(0, 7, /*writebar=*/0, 1, /*stall=*/1)));
+        for (int i = 0; i < 47; ++i) {
+            instrs.push_back(makeIns("MOV_R_II", {c_Pt, 5}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed,
+                                      CuControlCode::mergeCode(0, 7, 7, 1, 1)));
+        }
+        instrs.push_back(makeIns("MOV_R_R", {c_Pt, 8, 4}, {{OperandKind::GPR, AccessMode::WRITE}, {OperandKind::GPR, AccessMode::READ}},
+                                  c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)));
+        const auto graph = buildHazardGraph(instrs);
+        const auto intervals = collectBarrierIntervals(instrs, graph);
+        t.check("a producer whose input already has a real barrier keeps its interval even past "
+                "its curated safe margin",
+                intervals.size() == 1 && intervals[0].producerIndex == 0);
     }
 
     // ---- assignBarrierSlots() ----
@@ -479,22 +504,21 @@ int main() {
     // ptxas-compiled GEMM kernel with 28 such producers, all safely closed by natural instruction
     // spacing and needing zero scoreboard slots, was previously rejected as Unrepairable. ----
     {
-        // Instructions 0..6: seven independent LDS_R_ARI (curated minSafeBarrierMargin() of 13)
-        // producers on distinct registers, each followed by 14 padding instructions -- enough
-        // natural spacing that even the *closest* producer (6) clears its curated margin before
-        // the shared final consumer. Old (buggy) behavior: all seven got real intervals
-        // overlapping at the shared final consumer, exceeding the 6 physical slots --
-        // Unrepairable. Fixed behavior: every one of them clears its curated minimum margin, so
-        // none need a slot at all.
+        // Instructions 0..6: seven independent "UNCURATED_R_ARI" (deliberately not one of
+        // minSafeBarrierMargin()'s curated keys -- exercises the uncurated default margin of 1)
+        // producers on distinct registers, each followed by one padding instruction -- enough that
+        // no producer is adjacent to the shared final consumer. Their *input* control codes have
+        // no pre-existing barrier (writebar unset), so collectBarrierIntervals()'s safety net
+        // (Reports/correct-cc-margin-heuristic-strips-real-barriers.md) doesn't force protection
+        // either -- this exercises the margin skip alone. Old (buggy) behavior: all seven got real
+        // intervals overlapping at the shared final consumer, exceeding the 6 physical slots --
+        // Unrepairable. Fixed behavior: every one of them clears the default margin, so none need
+        // a slot at all.
         std::vector<DecodedInstruction> decoded;
         for (int i = 0; i < 7; ++i) {
-            decoded.push_back(makeIns("LDS_R_ARI", {c_Pt, i}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
-                                       CuControlCode::mergeCode(0, 7, /*writebar=*/0, 1, /*stall=*/0)));
-            // 14 padding instructions after each producer -- even producer 6 (the closest to the
-            // shared consumer below) ends up with distance 14 >= its curated minimum margin of 13.
-            for (int pad = 0; pad < 14; ++pad) {
-                decoded.push_back(makeIns("NOP", {c_Pt}, {}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)));
-            }
+            decoded.push_back(makeIns("UNCURATED_R_ARI", {c_Pt, i}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
+                                       CuControlCode::mergeCode(0, 7, /*writebar=*/7, 1, /*stall=*/0)));
+            decoded.push_back(makeIns("NOP", {c_Pt}, {}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)));
         }
         std::vector<std::int64_t> consumerVals{c_Pt};
         std::vector<OperandRoleEntry> consumerRoles;
@@ -524,21 +548,24 @@ int main() {
     // detection for a curated opcode, end to end -- the literal-adjacency-only version of this
     // fix could never produce two overlapping intervals (every triggered interval was forced to
     // exactly one instruction wide, and two distinct producers' width-1 windows can never overlap
-    // each other). A per-opcode minimum margin above 1 removes that limitation: two LDS_R_ARI
-    // producers, each below their own curated 13-margin threshold, can still need protection
-    // several instructions out, and if those windows overlap, they still need distinct slots. ----
+    // each other). A per-opcode minimum margin above 1 removes that limitation: two DMUL_R_R_R
+    // producers, each below their own curated 48-margin threshold, can still need protection
+    // several instructions out, and if those windows overlap, they still need distinct slots.
+    // (LDS_R_ARI is deliberately not used here any more -- see minSafeBarrierMargin()'s own doc
+    // for why its curated margin was proven unsound and removed.) ----
     {
-        // 0: LDS_R_ARI producer A on R4, margin 4 (< 13) -- needs a real interval [0, 5).
-        // 1: LDS_R_ARI producer B on R6, margin 4 (< 13) -- needs a real interval [1, 6), which
+        // 0: DMUL_R_R_R producer A on R4, margin 4 (< 48), no pre-existing barrier -- needs a real
+        //    interval [0, 5) from margin logic alone (not the safety net).
+        // 1: DMUL_R_R_R producer B on R6, margin 4 (< 48) -- needs a real interval [1, 6), which
         //    overlaps A's [0, 5) (A is still live when B's window opens).
         // 2-4: padding.
         // 5: consumer of A (RAW).
         // 6: consumer of B (RAW).
         const std::vector<DecodedInstruction> decoded = {
-            makeIns("LDS_R_ARI", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
-                    CuControlCode::mergeCode(0, 7, 0, 1, /*stall=*/0)),
-            makeIns("LDS_R_ARI", {c_Pt, 6}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
-                    CuControlCode::mergeCode(0, 7, 0, 1, /*stall=*/0)),
+            makeIns("DMUL_R_R_R", {c_Pt, 4}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
+                    CuControlCode::mergeCode(0, 7, /*writebar=*/7, 1, /*stall=*/0)),
+            makeIns("DMUL_R_R_R", {c_Pt, 6}, {{OperandKind::GPR, AccessMode::WRITE}}, c_VariableWrite,
+                    CuControlCode::mergeCode(0, 7, /*writebar=*/7, 1, /*stall=*/0)),
             makeIns("MOV_R_II", {c_Pt, 10}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
             makeIns("MOV_R_II", {c_Pt, 11}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),
             makeIns("MOV_R_II", {c_Pt, 12}, {{OperandKind::GPR, AccessMode::WRITE}}, c_Fixed, CuControlCode::mergeCode(0, 7, 7, 1, 1)),

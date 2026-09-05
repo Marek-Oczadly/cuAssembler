@@ -1114,52 +1114,52 @@ inline bool isBarrierEligible(const LatencyClassEntry& producerLatency, BarrierT
  *        and still the right default for any opcode with no real evidence behind a larger number.
  *
  *        Entries below are seeded ONLY from this repo's own already-confirmed real,
- *        ptxas-compiled, verify-cc-passing disassembly -- the same "confirmed by real disassembled
- *        control codes" evidence bar LatencyClass.sm_75.txt's own citations already hold
- *        themselves to -- never a guessed/typical cycle count. Each curated value is the *tightest*
- *        real margin actually witnessed safe (not a padded-down guess in either direction), so it
- *        stays exactly as permissive as the evidence allows: raising it would risk reintroducing
- *        Reports/correct-cc-overconservative-barrier-intervals.md's false positive on the kernel
- *        that motivated it; lowering it further would be an unfounded guess in the *unsafe*
- *        direction. Revisit (tighten or add entries) only against new confirmed evidence, exactly
+ *        ptxas-compiled, verify-cc-passing disassembly, or from published measurements -- never a
+ *        guessed/typical cycle count. But per Reports/correct-cc-margin-heuristic-strips-real-
+ *        barriers.md, a curated entry here is NOT a validated safety guarantee even when every
+ *        individual number is real: LDS_R_ARI was curated at margin 13 from one real witnessed-
+ *        safe instance in Reports/gemm-tiled-repro.sass, and directly DISPROVEN by two *other* real
+ *        instances in that exact same kernel -- "LDS.U R17, [R0.X4+0x440] ;" at address 0x2b0
+ *        (margin 14, distance 10 + stall 4) and "LDS.U R18, [R0.X4+0x480] ;" at address 0x2c0
+ *        (margin 14) -- both of which ptxas *did* protect with a real barrier despite a higher margin
+ *        than the "safe" witness. The additive distance+stall formula simply does not correlate
+ *        with real safety for this opcode; a single witnessed-safe instance does not bound every
+ *        instance, exactly as that report's root-cause section 2 warned. The LDS_R_ARI entry (and
+ *        its addressing-mode siblings) has been removed for this reason -- do not re-add it on the
+ *        strength of a single witness again. collectBarrierIntervals()'s own safety net (never let
+ *        this table's margin erase a barrier a producer's *input* control code already set) is the
+ *        real defense against this formula being wrong; every entry that remains below is a
+ *        published *worst-case* figure large enough that ordinary code essentially never reaches
+ *        it (i.e. it behaves as "always protect" in practice, which fails safe even if the
+ *        underlying formula turns out to correlate as poorly here as it did for LDS_R_ARI) -- none
+ *        of them have been individually cross-checked against real per-instance disassembly the
+ *        way LDS_R_ARI was and failed. Treat every remaining entry as provisional for the same
+ *        reason, and prefer the safety net over trusting this table's "skip" judgment on its own.
+ *        Revisit (tighten, remove, or add entries) only against new confirmed evidence, exactly
  *        like LatencyClass.sm_75.txt's own curation policy.
  * @param insKey Producer's instruction key (DecodedInstruction::insKey).
  * @return The curated minimum safe margin for insKey, or 1 if uncurated.
  **/
 inline std::uint32_t minSafeBarrierMargin(const std::string& insKey) {
     // Margin here is instruction-count-ish (natural distance + stall count), not a real cycle
-    // count -- see this function's own doc. The published-latency entries below (everything but
-    // LDS_R_ARI) use the paper's clock-cycle figure directly as a 1-margin-unit-per-cycle stand-in,
-    // which is itself an approximation (ignores dual issue, other warps' interleaving, etc.) on
-    // top of the paper's own measurement. That stacked imprecision is why every one of these picks
-    // the *most conservative* (highest, worst-case, or explicitly single-measured) figure available
-    // rather than an average -- consistent with this whole model's "conservative lower bound, not
-    // an exact cycle model" posture (simulateAndVerify()'s own doc). Source for all cycle counts
+    // count -- see this function's own doc. The published-latency entries below use the paper's
+    // clock-cycle figure directly as a 1-margin-unit-per-cycle stand-in, which is itself an
+    // approximation (ignores dual issue, other warps' interleaving, etc.) on top of the paper's
+    // own measurement. That stacked imprecision is why every one of these picks the *most
+    // conservative* (highest, worst-case, or explicitly single-measured) figure available rather
+    // than an average -- consistent with this whole model's "conservative lower bound, not an
+    // exact cycle model" posture (simulateAndVerify()'s own doc), and it's still not a proven
+    // guarantee -- see this function's own doc on LDS_R_ARI's removal. Source for all cycle counts
     // below: Zhe Jia, Marco Maggioni, Jeffrey Smith, Daniele Paolo Scarpazza, "Dissecting the
     // NVidia Turing T4 GPU via Microbenchmarking," arXiv:1903.07486 -- a T4 (sm_75) is the exact
     // architecture this repo's other curated evidence (LatencyClass.sm_75.txt,
     // TestData/CuTest/cudatest.7.sm_75.cuasm, Reports/gemm-tiled-repro.sass) already targets.
     static const std::map<std::string, std::uint32_t> table = {
-        // LDS_R_ARI (LDS.U/LDS.U.128 through a register+immediate address): Reports/
-        // gemm-tiled-repro.sass/.cu -- the real, ptxas-compiled, verify-cc-confirmed-correct
-        // kernel Reports/correct-cc-overconservative-barrier-intervals.md is about -- leaves
-        // several LDS_R_ARI instances completely unbarriered. The tightest is
-        // "LDS.U R16, [R0.X4+0x400] ;" at /*0290*/, first consumed by "FFMA R4, R16, R4, R19 ;"
-        // at /*0330*/: 9 natural instructions of spacing (0x0a0 bytes / 0x10 per instruction,
-        // minus the producer itself) plus the producer's own real stall count of 4 -- a
-        // witnessed-safe margin of 13. Kept at this in-repo witnessed value rather than raised to
-        // arXiv:1903.07486's own ~19-cycle "no-conflict" shared-memory figure (Table 2) --
-        // corroborating, same ballpark -- because raising it would misclassify this repo's own
-        // confirmed-safe real case and reintroduce the reported false positive on this exact
-        // kernel; a single concrete witness beats a paper average for the one case they conflict.
-        {"LDS_R_ARI", 13},
-        // LDS_R_AI/LDS_R_ARURI/LDS_R_AURI: same physical LDS.U op as LDS_R_ARI, only the address
-        // computation differs (immediate-only / register+uniform-register / uniform-register-only)
-        // -- extended by addressing-mode analogy, the same way LatencyClass.sm_75.txt itself
-        // curates every addressing-mode variant of one opcode identically.
-        {"LDS_R_AI", 13},
-        {"LDS_R_ARURI", 13},
-        {"LDS_R_AURI", 13},
+        // LDS_R_ARI/LDS_R_AI/LDS_R_ARURI/LDS_R_AURI: deliberately NOT curated -- see this
+        // function's own doc for the direct in-repo counter-evidence that disproved the margin-13
+        // entry this table used to carry. Falls back to the uncurated default of 1 (the original
+        // "only literal zero-margin adjacency is unconditionally unsafe" rule), which has no known
+        // counter-evidence against it.
 
         // LDG_* (global memory load, register(+uniform-register)+immediate addressing): worst
         // measured case, "616-cycle latency of the first access is the result of both L2 cache
@@ -1314,7 +1314,21 @@ inline std::vector<BarrierInterval> collectBarrierIntervals(const std::vector<De
         // (buildHazardGraph() only ever creates forward edges), so this never underflows.
         const std::uint32_t distance = static_cast<std::uint32_t>(interval.firstConsumerIndex - producer - 1);
         const std::uint32_t margin = distance + instrs[producer].ctrlCode.getStallCount();
-        if (margin >= minSafeBarrierMargin(instrs[producer].insKey)) {
+        const bool clearsMargin = margin >= minSafeBarrierMargin(instrs[producer].insKey);
+
+        // Safety net (Reports/correct-cc-margin-heuristic-strips-real-barriers.md): the margin
+        // heuristic is a coarse, unvalidated-per-instance approximation (proven unreliable for at
+        // least LDS_R_ARI -- see minSafeBarrierMargin()'s own doc), so it must never be allowed to
+        // *remove* protection a real compiler already put there. If this producer's own *input*
+        // control code already opened the relevant barrier field for this access, that is direct,
+        // first-party evidence it needs one -- keep the interval regardless of what the margin
+        // says. Only a producer whose input never had this barrier set can be skipped by margin
+        // alone.
+        const bool inputAlreadyProtected = (interval.direction == BarrierType::WRITE)
+                                                ? instrs[producer].ctrlCode.getWriteSB() != -1
+                                                : instrs[producer].ctrlCode.getReadSB() != -1;
+
+        if (clearsMargin && !inputAlreadyProtected) {
             continue;
         }
         result.push_back(interval);
